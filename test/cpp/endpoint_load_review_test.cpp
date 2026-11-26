@@ -128,7 +128,9 @@ TEST_CASE("A duplicate top-level endpoint key is reported; a duplicate auth is a
     REQUIRE(endpoint);
     REQUIRE(endpoint->duplicate_keys == std::vector<std::string>{"auth"});
     const auto warnings = joined(cm->validateEndpointConfig(*endpoint).warnings);
-    REQUIRE(warnings.find("SECURITY: endpoint key `auth` appears 2 times") != std::string::npos);
+    REQUIRE(warnings.find("SECURITY: endpoint key `auth` appears more than once") != std::string::npos);
+    // The first one is what is read: the hazard the warning is for.
+    REQUIRE_FALSE(endpoint->auth.enabled);
 }
 
 TEST_CASE("A file that looks like a mistyped endpoint is not skipped silently", "[endpoint_parser][review]") {

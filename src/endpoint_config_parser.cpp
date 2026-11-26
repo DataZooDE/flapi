@@ -8,6 +8,9 @@
 
 #include "mcp_description_scanner.hpp"
 #include "mustache_syntax_check.hpp"
+#include "database_manager.hpp"
+#include <crow/mustache.h>
+#include <regex>
 
 namespace flapi {
 
@@ -31,6 +34,7 @@ EndpointConfigParser::ParseResult EndpointConfigParser::parseFromFile(
         }
         
         YAML::Node yaml_node = parse_result.node;
+        result.included_files = parse_result.included_files;
         std::filesystem::path endpoint_dir = yaml_file_path.parent_path();
         if (PathSchemeUtils::IsRemotePath(yaml_file_path.string())) {
             // Directory of the YAML's URL, carrying its ?query (a SAS token / signature that
@@ -109,6 +113,38 @@ std::vector<std::string> EndpointConfigParser::FindUnknownEndpointKeys(const YAM
         }
     }
     return unknown;
+}
+
+std::vector<std::string> EndpointConfigParser::FindDuplicateEndpointKeys(const YAML::Node& yaml_node) {
+    std::vector<std::string> seen;
+    std::vector<std::string> duplicates;
+    if (!yaml_node.IsMap()) {
+        return duplicates;
+    }
+    for (const auto& entry : yaml_node) {
+        if (!entry.first.IsScalar()) {
+            continue;
+        }
+        const std::string key = entry.first.Scalar();
+        if (std::find(seen.begin(), seen.end(), key) == seen.end()) {
+            seen.push_back(key);
+        } else if (std::find(duplicates.begin(), duplicates.end(), key) == duplicates.end()) {
+            duplicates.push_back(key);
+        }
+    }
+    return duplicates;
+}
+
+std::string EndpointConfigParser::DuplicateEndpointKeyWarning(const std::string& key) {
+    std::string message = "endpoint key `" + key + "` appears more than once (after includes are expanded); "
+                          "only the first is read, the others are ignored";
+    if (key == "auth") {
+        // The first `auth:` decides whether the endpoint is protected: an
+        // `auth: {enabled: false}` above an include of the real block opens it.
+        return "SECURITY: " + message + ", so the first `auth:` alone decides whether this endpoint is "
+               "protected. Keep exactly one `auth:` (variants included `as auth` must exclude each other)";
+    }
+    return message;
 }
 
 namespace {
@@ -213,6 +249,29 @@ void EndpointConfigParser::parseEndpointFromYaml(
     if (!type.isValid()) {
         result.success = false;
         result.error_message = "Not a valid endpoint configuration (missing url-path or mcp-* fields)";
+        // A mistyped `url_path:` / `mcp_tool:` made a real endpoint look like a
+        // shared fragment: skipped silently, validation passed, the route 404'd.
+        if (yaml_node.IsMap()) {
+            static const std::vector<std::string> identity_keys = {"url-path", "mcp-tool", "mcp-resource",
+                                                                   "mcp-prompt"};
+            for (const auto& entry : yaml_node) {
+                if (!entry.first.IsScalar()) {
+                    continue;
+                }
+                const std::string key = entry.first.Scalar();
+                const std::string hint = UnknownEndpointKeyWarning(key);
+                for (const auto& identity : identity_keys) {
+                    if (hint.find("did you mean `" + identity + "`?") != std::string::npos) {
+                        result.warnings.push_back(
+                            "not loaded as an endpoint: it has no url-path or mcp-* key, and `" + key +
+                            "` is not one: did you mean `" + identity + "`?");
+                    }
+                }
+            }
+            if (result.warnings.empty() && (yaml_node["template-source"] || yaml_node["connection"])) {
+                result.endpoint_like_fragment = true;
+            }
+        }
         return;
     }
     
@@ -276,6 +335,7 @@ void EndpointConfigParser::parseEndpointFromYaml(
         // Keys nothing reads (#282): reported by startup and --validate-config,
         // never an error - operators keep their own annotation keys.
         config.unknown_keys = FindUnknownEndpointKeys(yaml_node);
+        config.duplicate_keys = FindDuplicateEndpointKeys(yaml_node);
 
         result.success = true;
         
@@ -608,23 +668,118 @@ void EndpointConfigParser::parseCommonFields(
     checkCacheTemplateFile(config);
 }
 
+namespace {
+
+// What the endpoint's template does, judged before any request: rendered with
+// a sample value for every variable (sections on), then read by DuckDB's
+// parser like the refresh does. A template that does not render or parse that
+// way falls back to a keyword scan outside literals and comments.
+std::optional<std::string> TemplateModification(const std::string& body, const PopulateTarget& target) {
+    try {
+        crow::mustache::context ctx;
+        for (const auto& variable : CollectMustacheVariables(body)) {
+            if (variable.name.empty() || variable.name == ".") {
+                continue;
+            }
+            crow::mustache::context* node = &ctx;
+            std::size_t begin = 0;
+            while (true) {
+                const auto dot = variable.name.find('.', begin);
+                const std::string part = variable.name.substr(begin, dot == std::string::npos ? std::string::npos
+                                                                                              : dot - begin);
+                if (dot == std::string::npos) {
+                    (*node)[part] = "1";
+                    break;
+                }
+                node = &(*node)[part];
+                begin = dot + 1;
+            }
+        }
+        ctx["cache"]["catalog"] = target.catalog;
+        ctx["cache"]["schema"] = target.schema;
+        ctx["cache"]["table"] = target.table;
+        const std::string sql = crow::mustache::compile(body).render(ctx).dump();
+        auto verdict = DatabaseManager::ServingScriptModification(sql, target);
+        if (!verdict || *verdict != "unparseable SQL") {
+            return verdict;
+        }
+    } catch (const std::exception&) {
+    }
+    static const std::regex literal(R"('(?:[^']|'')*'|--[^\n]*|/\*[\s\S]*?\*/)");
+    static const std::regex keyword(R"(\b(INSERT|UPDATE|DELETE|MERGE|COPY|CREATE|DROP|ALTER|TRUNCATE)\b)",
+                                    std::regex::icase);
+    const std::string code = std::regex_replace(body, literal, " ");
+    std::smatch match;
+    if (std::regex_search(code, match, keyword)) {
+        std::string word = match[1].str();
+        std::transform(word.begin(), word.end(), word.begin(), ::toupper);
+        return word;
+    }
+    return std::nullopt;
+}
+
+std::string EndpointLabel(const EndpointConfig& config) {
+    if (!config.urlPath.empty()) {
+        return (config.method.empty() ? std::string("GET") : config.method) + " " + config.urlPath;
+    }
+    return "MCP " + config.getName();
+}
+
+} // namespace
+
+std::optional<std::string> EndpointConfigParser::CacheTemplateFileProblem(const EndpointConfig& config,
+                                                                          const ConfigManager& config_manager) {
+    const auto& cache = config.cache;
+    if (!cache.enabled || cache.table.empty() || cache.template_file || config.isMCPPrompt()) {
+        return std::nullopt;
+    }
+    const auto body = ReadTemplateText(config.templateSource);
+    if (!body) {
+        return std::nullopt;   // a missing template is reported on its own
+    }
+    const PopulateTarget target{config_manager.getDuckLakeConfig().alias,
+                                cache.schema.empty() ? "main" : cache.schema, cache.table};
+    const auto modifies = TemplateModification(*body, target);
+    if (!modifies) {
+        return std::nullopt;
+    }
+    std::string message = EndpointLabel(config) + ": ";
+    if (config.operation.type == OperationConfig::Write) {
+        message += "a write endpoint's cache needs template-file when its template modifies data (" + *modifies +
+                   "): without one that template is the populate SQL, run again on every refresh.";
+    } else {
+        message += "a cache without template-file runs the endpoint's own template as its populate SQL, and "
+                   "this one modifies data (" + *modifies + "): every refresh would run it again.";
+    }
+    message += " Declare cache.template-file with SQL that rebuilds " + cache.table +
+               " (e.g. CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT ...)";
+    // The endpoint that serves this table usually has the populate template already.
+    if (const auto endpoints = config_manager.getEndpoints()) {
+        for (const auto& other : *endpoints) {
+            if (other.cache.enabled && other.cache.table == cache.table && other.cache.template_file &&
+                (other.cache.schema.empty() ? "main" : other.cache.schema) == target.schema) {
+                message += "; " + EndpointLabel(other) + " serves " + cache.table + " with template-file " +
+                           std::filesystem::path(*other.cache.template_file).filename().string() + ": reuse it";
+                break;
+            }
+        }
+    }
+    return message;
+}
+
 void EndpointConfigParser::checkCacheTemplateFile(const EndpointConfig& config) {
     const auto& cache = config.cache;
     if (!cache.enabled || cache.table.empty() || cache.template_file) {
         return;
     }
-    const std::string name = !config.urlPath.empty() ? config.urlPath : config.getName();
-    if (config.operation.type == OperationConfig::Write) {
-        // #276: without template-file the populate SQL is the endpoint's own
-        // template - here the INSERT/UPDATE/DELETE - and every refresh (warm-up,
-        // schedule, refresh-on-write) ran the write again.
-        throw std::runtime_error(
-            "endpoint " + name + ": a write endpoint's cache needs template-file: without one the populate "
-            "SQL would be the endpoint's own write template, run again on every refresh. Declare "
-            "cache.template-file with SQL that rebuilds " + cache.table +
-            " (e.g. CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT ...)");
+    // #276: without template-file the populate SQL is the endpoint's own
+    // template. A single SELECT is materialised; one that writes - a write
+    // endpoint's INSERT, a read whose template deletes - would run again on
+    // every refresh (warm-up, schedule, refresh-on-write).
+    if (auto problem = CacheTemplateFileProblem(config, *config_manager_)) {
+        throw std::runtime_error(*problem);
     }
-    CROW_LOG_WARNING << "cache on " << name
+    CROW_LOG_WARNING << "cache on " << (!config.urlPath.empty() ? config.urlPath : config.getName())
                      << " has no template-file: the endpoint's own template is the populate SQL; a single "
                         "SELECT is materialised into the cache table with a full refresh, whatever "
                         "primary-key/cursor imply. Declare template-file for an incremental refresh";

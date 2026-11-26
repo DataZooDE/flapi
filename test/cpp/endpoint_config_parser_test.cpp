@@ -653,20 +653,23 @@ TEST_CASE("EndpointConfigParser: a write endpoint's cache needs template-file", 
     EndpointConfigParser parser(manager.getYamlParser(), &manager);
 
     const std::string cache_block = "cache:\n  enabled: true\n  table: items_cache\n";
+    // The template is what decides (review of #276): a single SELECT is
+    // materialised, one that writes would run again on every refresh.
+    createTempYamlFile("INSERT INTO items VALUES (1)", "write_items.sql");
 
     SECTION("POST without template-file is a load error naming the endpoint") {
         auto yaml_file = createTempYamlFile(
-            "url-path: /items\nmethod: POST\ntemplate-source: test.sql\nconnection: [test_db]\n" + cache_block,
+            "url-path: /items\nmethod: POST\ntemplate-source: write_items.sql\nconnection: [test_db]\n" + cache_block,
             "endpoint_write_cache_no_tf.yaml");
         auto result = parser.parseFromFile(yaml_file);
         REQUIRE_FALSE(result.success);
-        REQUIRE(result.error_message.find("/items") != std::string::npos);
+        REQUIRE(result.error_message.find("POST /items") != std::string::npos);
         REQUIRE(result.error_message.find("a write endpoint's cache needs template-file") != std::string::npos);
         fs::remove(yaml_file);
     }
     SECTION("an explicit operation.type: write on a GET is a write endpoint too") {
         auto yaml_file = createTempYamlFile(
-            "url-path: /items\nmethod: GET\ntemplate-source: test.sql\nconnection: [test_db]\n"
+            "url-path: /items\nmethod: GET\ntemplate-source: write_items.sql\nconnection: [test_db]\n"
             "operation:\n  type: write\n" + cache_block,
             "endpoint_write_cache_no_tf_op.yaml");
         auto result = parser.parseFromFile(yaml_file);

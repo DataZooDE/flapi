@@ -47,7 +47,7 @@ public:
 
     std::string renderCacheTemplate(const EndpointConfig&, const CacheConfig& cache,
                                     std::map<std::string, std::string>&) override {
-        return "CREATE OR REPLACE TABLE x AS SELECT 1 -- " + cache.table;
+        return "CREATE OR REPLACE TABLE " + cache.table + " AS SELECT 1";
     }
     void executeDuckLakeQuery(const std::string&, const std::map<std::string, std::string>&) override {}
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
@@ -101,9 +101,7 @@ void writeCached(TempTestConfig& temp, const std::string& file, const std::strin
                  const std::string& method = "GET") {
     temp.writeEndpoint(file, "url-path: " + path + "\nmethod: " + method +
                                  "\ntemplate-source: serve.sql\nconnection: [test]\ncache:\n  enabled: true\n"
-                                 "  schema: main\n  table: " + table + "\n" +
-                                 // A write endpoint's cache needs one (#276).
-                                 (method == "GET" ? "" : "  template-file: serve.sql\n"));
+                                 "  schema: main\n  table: " + table + "\n");
 }
 
 const EndpointConfig& endpointFor(const std::shared_ptr<ConfigManager>& cm, const std::string& table) {

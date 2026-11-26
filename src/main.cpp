@@ -274,6 +274,17 @@ int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const s
         }
     }
 
+    // Files the scan did not load but that look like endpoints (a mistyped
+    // url-path): warnings, like an unknown key.
+    const auto& load_warnings = config_manager->getLoadWarnings();
+    if (!load_warnings.empty()) {
+        std::cout << "\n⚠ " << load_warnings.size() << " YAML file(s) not loaded as endpoints" << std::endl;
+        for (const auto& warning : load_warnings) {
+            std::cout << "  WARNING: " << flapi::RedactUrlsInText(warning) << std::endl;
+            warnings_count++;
+        }
+    }
+
     flapi::VFSReadMemoScope read_memo;  // validation re-reads every template: fetch each remote file once
     for (const auto& endpoint : *config_manager->getEndpoints()) {
         auto result = config_manager->validateEndpointConfig(endpoint);

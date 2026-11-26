@@ -732,16 +732,19 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         if (auto materialised = DatabaseManager::MaterialiseSelect(rendered, PopulateTarget{catalog, schema, table})) {
             rendered = std::move(*materialised);
             sync_type = "full";
-        } else if (endpoint.operation.type == OperationConfig::Write) {
-            // #276: a write endpoint's serving template is its INSERT/UPDATE/
-            // DELETE. Run as the populate script it repeated the write on every
-            // warm-up, scheduled refresh and refresh-on-write, and recorded
-            // success. The load refuses such an endpoint; this covers whatever
-            // reaches a refresh without that check (config service, reload).
+        } else if (const auto modifies = DatabaseManager::ServingScriptModification(
+                       rendered, PopulateTarget{catalog, schema, table})) {
+            // #276: the serving template changes data - a write endpoint's
+            // INSERT/UPDATE/DELETE, or a read (an MCP-only POST tool without
+            // `operation:` is one) whose template writes. Run as the populate
+            // script it repeated that on every warm-up, scheduled refresh and
+            // refresh-on-write, and recorded success. The load refuses such an
+            // endpoint; this covers whatever reaches a refresh without that
+            // check. A template that only reads still runs as before.
             const std::string name = !endpoint.urlPath.empty() ? endpoint.urlPath : endpoint.getName();
             refusal = "cache on " + name + " has no template-file and the endpoint's template is not a "
-                      "single SELECT (a write endpoint); it is not run as the populate script. Declare "
-                      "cache.template-file with SQL that rebuilds " + schema + "." + table;
+                      "single SELECT: it modifies data (" + *modifies + "), so it is not run as the populate "
+                      "script. Declare cache.template-file with SQL that rebuilds " + schema + "." + table;
         }
     }
     if (options.full) {

@@ -184,7 +184,8 @@ public:
     /**
      * @brief Extract a section from a YAML node
      */
-    static YAML::Node extractSection(const YAML::Node& node, const std::string& section_name);
+    static YAML::Node extractSection(const YAML::Node& node, const std::string& section_name,
+                                     const std::string& file = "");
 
     /**
      * @brief Merge YAML nodes

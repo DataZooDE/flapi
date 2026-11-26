@@ -34,6 +34,12 @@ public:
         EndpointConfig config;
         std::string error_message;
         std::vector<std::string> warnings;
+        // Files spliced in by {{include}} (absolute paths, as the YAML parser reports them).
+        std::vector<std::string> included_files;
+        // Not an endpoint, but it has template-source or connection: a shared
+        // fragment, or an endpoint missing its url-path. The loader warns
+        // unless another endpoint includes this file.
+        bool endpoint_like_fragment = false;
     };
 
     /**
@@ -87,6 +93,26 @@ public:
      *        ("did you mean `auth`?") where one applies.
      */
     static std::string UnknownEndpointKeyWarning(const std::string& key);
+
+    /**
+     * @brief Top-level keys of an endpoint YAML map that occur more than once
+     *        (once each, in file order). yaml-cpp reads the first.
+     */
+    static std::vector<std::string> FindDuplicateEndpointKeys(const YAML::Node& yaml_node);
+
+    /**
+     * @brief The warning for a duplicated key; "SECURITY: ..." for `auth`.
+     */
+    static std::string DuplicateEndpointKeyWarning(const std::string& key);
+
+    /**
+     * @brief Why this endpoint's cache cannot do without a template-file, or
+     *        nullopt (#276): with none, the populate SQL is the endpoint's own
+     *        template, which must not modify data. Names METHOD /path and, when
+     *        another loaded endpoint serves the table, its template-file.
+     */
+    static std::optional<std::string> CacheTemplateFileProblem(const EndpointConfig& config,
+                                                               const ConfigManager& config_manager);
 
 private:
     ExtendedYamlParser& yaml_parser_;
@@ -198,7 +224,7 @@ private:
      *        (#276), a warning otherwise. Needs the operation type, so it runs
      *        after parseOperationConfig.
      */
-    static void checkCacheTemplateFile(const EndpointConfig& config);
+    void checkCacheTemplateFile(const EndpointConfig& config);
 };
 
 } // namespace flapi

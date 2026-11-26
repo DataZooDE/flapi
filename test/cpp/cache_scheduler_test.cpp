@@ -43,12 +43,14 @@ public:
     std::optional<std::int64_t> snapshot_ms;
     std::atomic<bool> block{false};
     std::atomic<bool> interrupted{false};
-    std::string render_result = "CREATE OR REPLACE TABLE t AS SELECT 1";
+    // Empty: a populate that writes the cache table itself. (A CREATE of any
+    // other table is data-modifying, so a cache without template-file refuses it.)
+    std::string render_result;
 
-    std::string renderCacheTemplate(const EndpointConfig&, const CacheConfig&,
+    std::string renderCacheTemplate(const EndpointConfig&, const CacheConfig& cache,
                                     std::map<std::string, std::string>& params) override {
         rendered_params.push_back(params);
-        return render_result;
+        return render_result.empty() ? "CREATE OR REPLACE TABLE " + cache.table + " AS SELECT 1" : render_result;
     }
 
     void executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>&) override {
@@ -303,7 +305,8 @@ TEST_CASE("Endpoints sharing a cache table are warmed once", "[cache_manager][wa
     auto adapter = std::make_shared<SchedulerCacheAdapter>();
     CacheManager cache_manager(adapter);
     cache_manager.warmUpCaches(cm);
-    REQUIRE(adapter->count("CREATE OR REPLACE TABLE t AS SELECT 1") == 2);
+    REQUIRE(adapter->count("CREATE OR REPLACE TABLE shared AS SELECT 1") == 1);
+    REQUIRE(adapter->count("CREATE OR REPLACE TABLE other AS SELECT 1") == 1);
 }
 
 TEST_CASE("A cache that failed to build answers cache_build_failed", "[cache_manager][readiness]") {
@@ -349,7 +352,7 @@ TEST_CASE("A full refresh renders without the watermark and rebuilds", "[cache_m
 
     std::map<std::string, std::string> refresh_params;
     REQUIRE(cache_manager.refreshCache(cm, endpoint, refresh_params, CacheManager::RefreshOptions{true}));
-    REQUIRE(adapter->count("REBUILD CREATE OR REPLACE TABLE t") == 1);
+    REQUIRE(adapter->count("REBUILD CREATE OR REPLACE TABLE orders") == 1);
     REQUIRE(adapter->rendered_params.back().count("previousSnapshotTimestamp") == 0);
 }
 

@@ -597,16 +597,20 @@ class TestWriteCacheReview:
         assert "INSERT" in out, out[-2000:]
 
     def test_the_legacy_in_memory_update_is_validated(self):
-        root = _write_root(ENDPOINTS)
+        # A cached read without template-file over a SELECT is fine; the legacy
+        # camelCase update (applied in memory, unvalidated) could point it at the
+        # INSERT template, which every refresh would then run.
+        raw = ("url-path: /raw\ntemplate-source: one.sql\nconnection: [app]\nauth:\n  enabled: false\n"
+               "cache:\n  enabled: true\n  table: raw_cache\n  schema: main\n")
+        root = _write_root({**ENDPOINTS, "raw.yaml": raw})
         proc, base, log = _start(root)
         try:
-            # camelCase body: the legacy path that replaced the endpoint in memory unvalidated.
-            body = {"urlPath": "/items_sync", "method": "POST",
-                    "cache": {"enabled": True, "table": "items_cache", "schema": "main",
-                              "invalidateOnWrite": True}}
-            r = requests.put(f"{base}/api/v1/_config/endpoints/-items_sync?method=POST",
-                             json=body, headers=CS_AUTH, timeout=10)
+            body = {"urlPath": "/raw", "templateSource": os.path.join(root, "sqls", "create.sql")}
+            r = requests.put(f"{base}/api/v1/_config/endpoints/-raw", json=body, headers=CS_AUTH, timeout=10)
             assert r.status_code == 400, r.text
-            assert "needs template-file" in r.text, r.text
+            assert "GET /raw" in r.text and "INSERT" in r.text, r.text
+            # Still the SELECT.
+            r = requests.get(f"{base}/api/v1/_config/endpoints/-raw", headers=CS_AUTH, timeout=10)
+            assert "one.sql" in r.text, r.text
         finally:
             _stop(proc, log)
