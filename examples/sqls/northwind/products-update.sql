@@ -5,7 +5,7 @@
 UPDATE nw.Products
 SET
 {{#params.product_name}}
-    ProductName = '{{{ params.product_name }}}',
+    ProductName = '{{ params.product_name }}',
 {{/params.product_name}}
 {{#params.supplier_id}}
     SupplierID = {{{ params.supplier_id }}},
@@ -14,7 +14,7 @@ SET
     CategoryID = {{{ params.category_id }}},
 {{/params.category_id}}
 {{#params.quantity_per_unit}}
-    QuantityPerUnit = '{{{ params.quantity_per_unit }}}',
+    QuantityPerUnit = '{{ params.quantity_per_unit }}',
 {{/params.quantity_per_unit}}
 {{#params.unit_price}}
     UnitPrice = {{{ params.unit_price }}},

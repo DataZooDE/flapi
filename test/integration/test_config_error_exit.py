@@ -175,6 +175,9 @@ class TestValidateConfigReportsEverything:
                 "LIMIT {{ params.limit }} OFFSET {{ params.offset }}\n"),
         })
         r, out = validate(project)
-        assert "params." not in out.replace("params.nope", ""), (
+        # The free-text lint (#277) rightly names the unvalidated '{{{ params.tenant }}}' sites;
+        # this test is about the undeclared-parameter check, so those lines are set aside.
+        undeclared = "\n".join(l for l in out.splitlines() if "free-text field" not in l)
+        assert "params." not in undeclared.replace("params.nope", ""), (
             f"a valid template was flagged:\n{out}")
         assert r.returncode == 0, out

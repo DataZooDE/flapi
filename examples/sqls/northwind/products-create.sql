@@ -17,7 +17,7 @@ VALUES (
     {{{ params.supplier_id }}},
     {{{ params.category_id }}},
     {{#params.quantity_per_unit}}
-    '{{{ params.quantity_per_unit }}}'
+    '{{ params.quantity_per_unit }}'
     {{/params.quantity_per_unit}}
     {{^params.quantity_per_unit}}
     NULL

@@ -18,7 +18,7 @@ WHERE 1=1
     AND ProductID = {{{ params.product_id }}}
 {{/params.product_id}}
 {{#params.product_name}}
-    AND ProductName LIKE '%{{{ params.product_name }}}%'
+    AND ProductName LIKE '%{{ params.product_name }}%'
 {{/params.product_name}}
 {{#params.category_id}}
     AND CategoryID = {{{ params.category_id }}}

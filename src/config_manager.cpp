@@ -4,6 +4,7 @@
 #include "route_translator.hpp"
 #include "request_context.hpp"
 #include "mustache_syntax_check.hpp"
+#include "prepared_template_rewriter.hpp"
 
 #include <set>
 #include <string_view>
@@ -4228,6 +4229,12 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         std::vector<std::string> path_names;
         RouteTranslator::translateRoutePath(config.urlPath, path_names);
         known.insert(path_names.begin(), path_names.end());
+
+        // Free text pasted where neither binding nor quote-doubling keeps it a
+        // value (#277); also logged at load.
+        for (auto& risky : FindRiskyTemplateSites(*text, config.request_fields, "Template " + label)) {
+            problems.push_back(std::move(risky));
+        }
 
         std::set<std::string> reported;
         for (const auto& variable : CollectMustacheVariables(*text)) {

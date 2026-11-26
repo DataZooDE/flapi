@@ -320,6 +320,15 @@ bool unquotedIsAValue(const std::string& s, const TagScan& tag) {
     return true;
 }
 
+// E'...' (or e'...'): a backslash escapes the quote there, so doubling it is
+// no protection.
+bool isEscapeString(const std::string& s, const Span& lit) {
+    if (lit.open == 0 || (s[lit.open - 1] != 'E' && s[lit.open - 1] != 'e')) {
+        return false;
+    }
+    return lit.open == 1 || !isIdentChar(s[lit.open - 2]);
+}
+
 bool hasValidatorType(const RequestFieldConfig& field, const char* type) {
     return std::any_of(field.validators.begin(), field.validators.end(),
                        [type](const ValidatorConfig& v) { return v.type == type; });
@@ -470,6 +479,19 @@ PreparedRewriteResult PreparedTemplateRewriter::rewrite(
                     (tag.kind == TagKind::TripleBrace && within(time_travel, tag.start)) ||
                     !unquotedIsAValue(template_text, tag)) {
                     appendRange(result.rewritten_template, template_text, tag.start, tag.end);
+                    if (field != nullptr) {
+                        TemplateTextSite site;
+                        site.field_name = name;
+                        site.triple = tag.kind == TagKind::TripleBrace;
+                        site.in_plain_literal = !within(comments, tag.start) &&
+                                                std::any_of(literals.begin(), literals.end(), [&](const Span& l) {
+                                                    return tag.start > l.open && tag.start < l.close &&
+                                                           !isEscapeString(template_text, l);
+                                                });
+                        site.in_section = section_depth > 0;
+                        site.offset = tag.start;
+                        result.text_sites.push_back(std::move(site));
+                    }
                     break;
                 }
                 result.rewritten_template += '?';
@@ -488,6 +510,81 @@ PreparedRewriteResult PreparedTemplateRewriter::rewrite(
     }
 
     return result;
+}
+
+namespace {
+
+// A validator that pins the value to a shape without a quote or free text.
+bool restrictsValue(const ValidatorConfig& v) {
+    static const char* const kTyped[] = {"int", "integer", "number", "float", "double", "boolean", "bool",
+                                         "email", "uuid", "date", "time", "enum"};
+    for (const char* t : kTyped) {
+        if (v.type == t) {
+            return true;
+        }
+    }
+    return v.type == "string" && !v.regex.empty();
+}
+
+}  // namespace
+
+std::vector<std::string> FindRiskyTemplateSites(const std::string& template_text,
+                                                const std::vector<RequestFieldConfig>& request_fields,
+                                                const std::string& label) {
+    std::vector<std::string> out;
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    const auto result = rewriter.rewrite(template_text, request_fields, classifier);
+    for (const auto& site : result.text_sites) {
+        const RequestFieldConfig* field = findField(site.field_name, request_fields);
+        if (field == nullptr ||
+            std::any_of(field->validators.begin(), field->validators.end(), restrictsValue)) {
+            continue;
+        }
+        if (!site.triple && site.in_plain_literal) {
+            continue;   // its quotes are doubled: it stays one string
+        }
+        std::size_t line = 1;
+        std::size_t column = 1;
+        for (std::size_t i = 0; i < site.offset && i < template_text.size(); ++i) {
+            if (template_text[i] == '\n') {
+                ++line;
+                column = 1;
+            } else {
+                ++column;
+            }
+        }
+        const std::string tag = site.triple ? "{{{ params." + site.field_name + " }}}"
+                                            : "{{ params." + site.field_name + " }}";
+        const std::string quoted = "'{{ params." + site.field_name + " }}'";
+        std::string where;
+        if (site.in_section) {
+            where = "is inside a section, where it is not bound,";
+        } else if (!classifier.classify(*field).bindable) {
+            where = "is never bound (the field has no typed validator),";
+        } else {
+            where = "is at a site where it is not bound (a name, a typed literal or a comment),";
+        }
+        std::string fix;
+        if (site.triple && site.in_plain_literal) {
+            where += " and is pasted into its '...' literal as it is: a quote in the value ends the literal";
+            fix = "write " + quoted + " (its single quotes are doubled)";
+        } else if (site.triple) {
+            where += " and is pasted as SQL text as it is";
+            fix = "quote it as " + quoted;
+        } else {
+            where += " and is pasted outside a '...' literal, where doubling its quotes protects nothing";
+            fix = "quote it as " + quoted;
+        }
+        if (site.in_section) {
+            fix = "move it out of the section, where it binds, or " + fix;
+        }
+        out.push_back((label.empty() ? std::string("template") : label) + ":" + std::to_string(line) + ":" +
+                      std::to_string(column) + ": '" + tag + "' uses the free-text field '" + site.field_name +
+                      "' (no typed, enum or regex validator) and " + where + ". Fix: " + fix +
+                      ", or restrict the field with an enum or regex validator");
+    }
+    return out;
 }
 
 } // namespace flapi

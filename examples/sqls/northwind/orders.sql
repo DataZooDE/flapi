@@ -32,7 +32,7 @@ WHERE 1=1
     AND o.OrderID = {{{ params.order_id }}}
 {{/params.order_id}}
 {{#params.customer_id}}
-    AND o.CustomerID = '{{{ params.customer_id }}}'
+    AND o.CustomerID = '{{ params.customer_id }}'
 {{/params.customer_id}}
 {{#params.order_date}}
     AND DATE(o.OrderDate) = DATE('{{{ params.order_date }}}')

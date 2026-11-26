@@ -23,10 +23,29 @@ struct PreparedBindingSpec {
     bool absent_as_empty = false;
 };
 
+// A `params.*` tag of a declared field that the rewriter left as SQL text.
+struct TemplateTextSite {
+    std::string field_name;
+    bool triple = false;            // {{{ }}} pastes the value as it is; {{ }} doubles its quotes
+    bool in_plain_literal = false;  // inside a '...' literal (not E'...', not a comment)
+    bool in_section = false;
+    std::size_t offset = 0;         // of the tag's first `{`
+};
+
 struct PreparedRewriteResult {
     std::string rewritten_template;
     std::vector<PreparedBindingSpec> bindings;
+    std::vector<TemplateTextSite> text_sites;
 };
+
+// A lint for load and --validate-config (#277): every reference to a free-text
+// field (no typed, enum or regex validator restricting the value) that stays
+// SQL text where neither binding nor quote-doubling keeps it a value - a
+// `{{{ }}}` anywhere it is not bound, a `{{ }}` outside a plain '...' literal.
+// One message per site, "<label>:<line>:<col>: ...".
+std::vector<std::string> FindRiskyTemplateSites(const std::string& template_text,
+                                                const std::vector<RequestFieldConfig>& request_fields,
+                                                const std::string& label);
 
 // Pure helper. Scans a Mustache template and rewrites occurrences of
 // `{{ params.X }}` to `?` for parameters X that the classifier marks

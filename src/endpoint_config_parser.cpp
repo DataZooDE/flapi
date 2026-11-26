@@ -8,6 +8,7 @@
 
 #include "mcp_description_scanner.hpp"
 #include "mustache_syntax_check.hpp"
+#include "prepared_template_rewriter.hpp"
 
 namespace flapi {
 
@@ -152,6 +153,14 @@ void EndpointConfigParser::parseEndpointFromYaml(
                 // error, so startup, reload and --validate-config refuse it.
                 if (auto error = CheckAuthPlacementInTemplateFile(config.templateSource)) {
                     throw std::runtime_error(*error);
+                }
+                // Free text pasted where neither binding nor quote-doubling keeps
+                // it a value (#277): a warning, as --validate-config repeats it.
+                if (const auto text = ReadTemplateText(config.templateSource)) {
+                    for (const auto& risky :
+                         FindRiskyTemplateSites(*text, config.request_fields, "Template " + config.templateSource)) {
+                        CROW_LOG_WARNING << risky;
+                    }
                 }
             }
             if (config.cache.template_file) {
