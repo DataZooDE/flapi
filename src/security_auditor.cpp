@@ -183,6 +183,82 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
         }
     }
 
+    if (mcp.enabled && mcp.auth.enabled) {
+        // MCPAuthorizationPolicy denies an entity with no allowed-roles to
+        // EVERY caller once mcp.auth is on (deny by default). A tool that
+        // reads as exposed then answers 403 to everyone; say it at startup.
+        const auto report = [&](const char* kind, const std::string& name, const EndpointConfig& endpoint) {
+            warnings.push_back({
+                "MCP_TOOL_NO_ALLOWED_ROLES",
+                std::string("MCP ") + kind + " '" + name + "' has no allowed-roles while mcp.auth.enabled "
+                "is true, so every caller is refused (HTTP 403). Add allowed-roles listing the roles "
+                "that may use it.",
+                endpointLocation(endpoint)
+            });
+        };
+        for (const auto& endpoint : *config.getEndpoints()) {
+            if (endpoint.isMCPTool() && !endpoint.mcp_tool->allowed_roles.has_value()) {
+                report("tool", endpoint.mcp_tool->name, endpoint);
+            }
+            if (endpoint.isMCPResource() && !endpoint.mcp_resource->allowed_roles.has_value()) {
+                report("resource", endpoint.mcp_resource->name, endpoint);
+            }
+            if (endpoint.isMCPPrompt() && !endpoint.mcp_prompt->allowed_roles.has_value()) {
+                report("prompt", endpoint.mcp_prompt->name, endpoint);
+            }
+        }
+    }
+
+    if (mcp.enabled && !mcp.auth.enabled) {
+        // The REST route asks for credentials; the same SQL as an MCP tool
+        // does not, because MCP has its own (here: no) authentication.
+        for (const auto& endpoint : *config.getEndpoints()) {
+            if (endpoint.isMCPTool() && endpoint.auth.enabled) {
+                const std::string location = endpointLocation(endpoint);
+                warnings.push_back({
+                    "MCP_TOOL_BYPASSES_REST_AUTH",
+                    "MCP tool '" + endpoint.mcp_tool->name + "' runs the SQL of " + location +
+                    ", which requires authentication over REST" +
+                    (endpoint.auth.inherited ? " (the top-level auth block)" : "") +
+                    ", but mcp.auth.enabled is false: any caller reaching /mcp/jsonrpc gets the "
+                    "same data without credentials. Enable mcp.auth with allowed-roles, or remove "
+                    "the mcp-tool block.",
+                    location
+                });
+            }
+        }
+    }
+
+    // An `authentication:` (or `Auth:`, `auth_config:`) key is read by
+    // nothing. Without an `auth:` block the endpoint is open, or inherits the
+    // top-level auth, while its file reads as protected.
+    for (const auto& endpoint : *config.getEndpoints()) {
+        if (endpoint.auth.declared) {
+            continue;
+        }
+        std::string names;
+        for (const auto& key : endpoint.unknown_keys) {
+            std::string lower = key;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (lower.rfind("auth", 0) == 0) {
+                names += (names.empty() ? "'" : ", '") + key + "'";
+            }
+        }
+        if (names.empty()) {
+            continue;
+        }
+        warnings.push_back({
+            "ENDPOINT_AUTH_KEY_IGNORED",
+            "Endpoint file has the key(s) " + names + ", which flAPI does not read, and no `auth:` "
+            "block. " + (endpoint.auth.inherited
+                             ? std::string("The endpoint uses the top-level auth block instead.")
+                             : std::string("The endpoint requires no authentication.")) +
+            " Rename the key to `auth:` if it was meant to protect this endpoint.",
+            endpointLocation(endpoint)
+        });
+    }
+
     // A wildcard CORS origin on an authenticated server lets any web page make
     // cross-origin requests to it and read the responses whenever the page can
     // present a credential (a token it holds, or one a user pastes). The

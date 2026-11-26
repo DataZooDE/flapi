@@ -283,6 +283,12 @@ struct EndpointConfig {
     // Path to the YAML configuration file for this endpoint (for reloading)
     std::string config_file_path;
 
+    // Top-level keys of the endpoint file that flAPI does not read (a typo,
+    // `authentication:` for `auth:`), in file order. Filled by the endpoint
+    // parser; SecurityAuditor reports an `auth*` one when the endpoint has no
+    // `auth:` block (ENDPOINT_AUTH_KEY_IGNORED).
+    std::vector<std::string> unknown_keys;
+
     // MCP-specific metadata (optional)
     struct MCPToolInfo {
         std::string name;
