@@ -122,5 +122,24 @@ TEST_CASE("toolSuccessResultJson: rows go under structuredContent.rows with a ro
             std::string::npos);
 }
 
+TEST_CASE("MCPDryRun::formatResult: the injected __auth_* identity is not echoed",
+          "[security][mcp][dryrun]") {
+    const std::map<std::string, std::string> params = {
+        {"id", "42"},
+        {"__auth_username", "alice"},
+        {"__auth_roles", "analyst"},
+        {"__auth_type", "bearer"},
+        {"__auth_authenticated", "true"},
+    };
+    for (const auto& payload : {MCPDryRun::formatResult("t", "SELECT 1", params),
+                                MCPDryRun::formatResult("t", "SELECT 1", params, {}, {}, TemplateSecrets{})}) {
+        REQUIRE(payload.find("__auth_") == std::string::npos);
+        const auto parsed = crow::json::load(payload);
+        REQUIRE(parsed);
+        REQUIRE(parsed["parameters"].has("id"));
+        REQUIRE(parsed["parameters"].size() == 1);
+    }
+}
+
 } // namespace test
 } // namespace flapi

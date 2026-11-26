@@ -240,6 +240,19 @@ class TestDryRunMode:
         assert inner["bindings"][0]["value"] == 42, inner
         assert inner["parameters"]["id"] == 42, inner
 
+    def test_dry_run_does_not_echo_the_injected_identity_keys(self, dry_run_server):
+        # The server injects the principal as `__auth_*` parameters for the
+        # template's `auth.*`. They are server data, not the caller's
+        # arguments, and the preview's `parameters` echoed them back.
+        token = _make_jwt()
+        sid = _initialize(dry_run_server, token)
+
+        r = _tools_call(dry_run_server, token, sid, {"id": 42, "_dryRun": True})
+        assert r.status_code == 200, r.text
+        assert "__auth_" not in r.text, r.text
+        inner = json.loads(r.json()["result"]["content"][0]["text"])
+        assert inner["parameters"] == {"id": 42}, inner
+
     def test_dry_run_structured_content_is_the_preview_without_rows(self, dry_run_server):
         # A dry run returns no rows, so it says nothing about them: no `rows: []`,
         # no `row_count: 0`, which read as "the query matched nothing".
