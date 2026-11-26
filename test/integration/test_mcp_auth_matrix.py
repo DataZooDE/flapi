@@ -303,6 +303,15 @@ class TestMcpAuthMatrix:
         assert "error" in body, f"secret_data should deny-by-default: {body}"
         assert "TOP-SECRET" not in r.text
 
+    def test_no_allowed_roles_denial_does_not_coach_the_caller(self, auth_server):
+        # The 403 text reaches the agent: no "disable mcp.auth" advice.
+        token = _make_jwt(roles=["admin"])
+        r = _post(auth_server, *READ_SECRET, token=token)
+        assert r.status_code == 403, r.text
+        message = r.json()["error"]["message"]
+        assert "mcp.auth" not in message, message
+        assert "is not available to your roles" in message, message
+
     def test_wrong_role_denied_on_gated_resource(self, auth_server):
         token = _make_jwt(roles=["admin"])
         r = _post(auth_server, *READ_GATED, token=token)

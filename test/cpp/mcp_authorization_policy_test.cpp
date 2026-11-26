@@ -181,5 +181,15 @@ TEST_CASE("mcpWwwAuthenticate: the challenge follows mcp.auth.type", "[mcp][auth
     }
 }
 
+TEST_CASE("MCPAuthorizationPolicy: a missing allowed-roles denial is a neutral caller message",
+          "[mcp][auth]") {
+    // The reason reaches the AGENT. It must not coach it to have the operator
+    // turn authentication off; that hint belongs to the startup warning.
+    MCPAuthorizationPolicy policy;
+    const auto decision = policy.authorizeRoles(std::nullopt, "Tool 'x'", {"analyst"}, true);
+    REQUIRE_FALSE(decision.allowed);
+    REQUIRE(decision.reason == "Tool 'x' is not available to your roles.");
+}
+
 } // namespace test
 } // namespace flapi
