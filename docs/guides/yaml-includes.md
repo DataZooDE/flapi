@@ -52,8 +52,11 @@ template:
 You can splice content from another YAML file directly into the current document.
 
 - Basic include: `{{include from path/to/file.yaml}}`
-- Section include: `{{include:top_level_key from path/to/file.yaml}}` includes only that key
-- Conditional include: append `if <condition>` to either form
+- Section include: `{{include:top_level_key from path/to/file.yaml}}` includes only that key,
+  **under its own name**
+- Renamed section include: `{{include:top_level_key as other_key from path/to/file.yaml}}`
+  includes that key's value under `other_key:`
+- Conditional include: append `if <condition>` to any form
 
 Conditions supported:
 - `true` or `false`
@@ -77,6 +80,56 @@ Examples:
 {{include from {{env.CONFIG_DIR}}/secrets.yaml}}
 ```
 
+### One shared file, several variants: `as`
+
+A section include keeps the section's own key. With a shared file that holds
+variants side by side, include the one you want **as** the key the endpoint reads:
+
+```yaml
+# sqls/common.yaml (no url-path: a fragment, never loaded as an endpoint)
+auth-prod:
+  enabled: true
+  type: basic
+  users:
+    - username: ops
+      password: '{{env.FLAPI_OPS_PASSWORD}}'
+auth-dev:
+  enabled: false
+```
+
+```yaml
+# sqls/orders.yaml
+url-path: /orders
+template-source: orders.sql
+connection: [orders-db]
+{{include:auth-prod as auth from common.yaml if env.FLAPI_PROD}}
+{{include:auth-dev as auth from common.yaml if !env.FLAPI_PROD}}
+```
+
+Without `as`, `{{include:auth-prod from common.yaml}}` inserts an `auth-prod:` key.
+Nothing reads it, so the endpoint has no `auth:` of its own: it falls back to the
+top-level `auth:` of `flapi.yaml`, or is **public** when there is none. flAPI warns
+about every endpoint key it does not read, at startup and in `--validate-config`,
+and points at the fix:
+
+```text
+Unknown endpoint key `auth-prod` is ignored; nothing reads it: did you mean `auth`?
+included sections keep their own name; use `{{include:auth-prod as auth from ...}}`
+to insert it as `auth:`
+```
+
+It is a warning, not an error: `--validate-config` still passes, so check its output.
+
+**The variants must exclude each other.** Exactly one `auth:` may end up in the
+expanded file: give the two includes opposite conditions (`if env.X` and
+`if !env.X`, as above), and do not also write an `auth:` of your own. When a key
+occurs twice only the **first** is read, so `auth: {enabled: false}` above
+`{{include:auth-prod as auth from common.yaml}}` leaves the endpoint public.
+flAPI warns: ``SECURITY: endpoint key `auth` appears more than once ...``.
+
+The directive is lower-case `as`; `AS` is a syntax error. Spaces inside the
+braces are fine: `{{ include:auth-prod as auth from common.yaml }}`.
+
 Resolution rules and behavior:
 - Paths are resolved relative to the current file first; absolute paths are supported.
 - Includes inside YAML comments are ignored (e.g., lines starting with `#`).
@@ -86,6 +139,7 @@ Resolution rules and behavior:
 
 Tips:
 - Prefer section includes (`{{include:...}}`) to avoid unintentionally overwriting unrelated keys.
+- A section whose name is not an endpoint key (`auth-prod`, `cache-eu`) needs `as`.
 - Keep shared blocks in small files (e.g., `connections.yaml`, `auth.yaml`) and include them where needed.
 
 **Remote configuration.** When the config (or `template.path`) lives in a bucket or on http(s), an include may only

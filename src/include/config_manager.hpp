@@ -13,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -282,6 +283,19 @@ struct EndpointConfig {
     
     // Path to the YAML configuration file for this endpoint (for reloading)
     std::string config_file_path;
+
+    // Top-level keys of the endpoint YAML (after includes) that nothing reads,
+    // in file order (#282). Filled by EndpointConfigParser only - empty for an
+    // endpoint built from JSON. Startup and --validate-config warn about each;
+    // the security auditor can use it to flag an ignored `auth*` key.
+    std::vector<std::string> unknown_keys;
+
+    // Top-level keys that occur more than once after includes, once each, in
+    // file order. Only the FIRST occurrence is read, so `auth: {enabled:
+    // false}` before `{{include:auth-prod as auth from ...}}` leaves the
+    // endpoint public. Warned about (a duplicate `auth` as SECURITY); the
+    // security auditor can use it for --strict.
+    std::vector<std::string> duplicate_keys;
 
     // MCP-specific metadata (optional)
     struct MCPToolInfo {
@@ -710,6 +724,9 @@ public:
     // a file it could not load. Set before loadConfig().
     void setCollectLoadErrors(bool collect) { collect_load_errors_ = collect; }
     const std::vector<std::string>& getLoadErrors() const { return load_errors_; }
+    // Warnings about files the endpoint scan did not load (a mistyped url-path,
+    // an endpoint-like file nothing includes); logged, and printed by --validate-config.
+    const std::vector<std::string>& getLoadWarnings() const { return load_warnings_; }
 
     // Getters for configuration values
     std::string getProjectName() const;
@@ -992,6 +1009,11 @@ protected:
     // Set while the startup scan of template.path loads endpoint files: a template-source outside it is refused.
     bool enforce_template_containment_ = false;
     std::vector<std::string> load_errors_;
+    std::vector<std::string> load_warnings_;
+    // During the endpoint scan: skipped files with template-source/connection,
+    // and every file an endpoint included (the former that are not the latter warn).
+    std::vector<std::string> endpoint_like_fragments_;
+    std::set<std::string> files_included_by_endpoints_;
     YAML::Node config;
     std::string project_name;
     TracingConfig tracing_config;

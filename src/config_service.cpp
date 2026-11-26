@@ -2343,6 +2343,16 @@ crow::response EndpointConfigHandler::updateExisting(const crow::request& req, c
             return jsonError(400, problem);
         }
     }
+    // Validated like every other update: this path replaced the endpoint in
+    // memory unchecked, so e.g. a write endpoint's cache without template-file
+    // (#276) slipped in here after the load refused it.
+    if (const auto validation = config_manager_->validateEndpointConfig(updated_config); !validation.valid) {
+        std::string message = "Invalid endpoint configuration";
+        for (const auto& error : validation.errors) {
+            message += ": " + error;
+        }
+        return jsonError(400, message);
+    }
     if (!config_manager_->replaceEndpoint(updated_config)) {
         return jsonError(404, "Endpoint not found");
     }
@@ -3582,6 +3592,11 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
                 return crow::response(400, problem);
             }
             cache.template_file = json["template-file"].s();
+        }
+        // #276: a cache block this update leaves without template-file over a
+        // template that writes would run the write on every refresh.
+        if (auto problem = EndpointConfigParser::CacheTemplateFileProblem(updated, *config_manager_)) {
+            return crow::response(400, *problem);
         }
 
         if (!config_manager_->replaceEndpoint(updated)) {

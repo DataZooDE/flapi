@@ -1435,8 +1435,39 @@ Reuse common configuration across endpoints using the include syntax.
 **Syntax:**
 
 ```yaml
-{{include:section_name from filename.yaml}}
+{{include from filename.yaml}}                          # the whole file
+{{include:section_name from filename.yaml}}             # one top-level key, under its own name
+{{include:section_name as key from filename.yaml}}      # that key's value, under `key:`
+{{include:section_name as key from filename.yaml if env.FLAPI_ENV}}   # any form, conditionally
 ```
+
+A section include keeps the section's name. `as key` inserts it under `key` instead, so a shared file
+can hold variants (`auth-prod:`, `auth-dev:`) and an endpoint picks one as its `auth:`. See
+[the includes guide](guides/yaml-includes.md#one-shared-file-several-variants-as). `as` is lower-case
+(`AS`, or `as` without a key, is an include syntax error); spaces inside the braces are allowed
+(`{{ include:auth-prod as auth from common.yaml }}`); a section the file does not have is an error
+naming the file.
+
+**Unknown endpoint keys warn.** After includes are expanded, every top-level key of an endpoint file
+that flAPI does not read is reported, at startup (in the log, naming the file), by `--validate-config`
+(as a warning under the endpoint: validation still passes) and by the config-service validate API (in
+`warnings`): ``Unknown endpoint key `auth-prod` is ignored; nothing reads it: did you mean `auth`? ...``.
+Near misses get a hint (`rate_limit` → `rate-limit`, `urlpath` → `url-path`, `auth-prod` → `as auth`).
+The keys read are `url-path`, `method`, `allow-shadowing`, `description`, `with-pagination`,
+`total-count`, `request-fields-validation`, `template-source`, `request`, `connection`, `rate-limit`,
+`auth`, `cache`, `heartbeat`, `operation`, `mcp-tool`, `mcp-resource` and `mcp-prompt`
+(`EndpointConfigParser::KnownEndpointKeys()`).
+
+**Duplicate keys warn.** A top-level key that occurs twice after includes are expanded (`auth:` written
+in the file and `{{include:auth-prod as auth from ...}}`) is ignored after its first occurrence. It is
+reported the same way; a duplicate `auth` as ``SECURITY: endpoint key `auth` appears more than once
+...``, since the first `auth:` alone decides whether the endpoint is protected.
+
+**Files that are not endpoints.** A file with no `url-path` and no `mcp-*` key is a shared fragment,
+skipped and never checked for unknown keys - unless it looks like a mistyped endpoint: a key such as
+`urlpath`, `url_path` or `mcp_tool` warns ``not loaded as an endpoint: ... did you mean `url-path`?``,
+and a file with `template-source` or `connection` that no endpoint includes warns too. Startup logs
+these and `--validate-config` lists them as warnings; the route would otherwise answer `404` silently.
 
 **Example:**
 
@@ -1813,7 +1844,7 @@ DuckLake caching enables snapshot-based query result caching with automatic refr
 | `cache.table` | string | **required** | Cache table name |
 | `cache.schema` | string | `"cache"` | DuckDB schema name |
 | `cache.schedule` | string | - | Refresh schedule (e.g., `5m`, `1h`, `30s`) |
-| `cache.template-file` | string | - | Cache populate SQL template. Without it the endpoint's `template-source` is materialised with a full refresh (startup warns) |
+| `cache.template-file` | string | - | Cache populate SQL template. Without it the endpoint's `template-source` is materialised with a full refresh (startup warns). **Required when the endpoint's template modifies data** (a write endpoint's `INSERT`): without it the server refuses to start ([§8.2](#82-write-operations)) |
 | `cache.warmup` | string | - | Overrides `ducklake.warmup` for this endpoint: `always`, `if-empty` or `never` |
 
 **Schedule Format:**
@@ -1882,6 +1913,19 @@ Without `cache.template-file` the endpoint's `template-source` is the populate S
 refresh every time, whatever `primary-key`/`cursor` imply (audited as `full`) - and startup warns
 `cache on <endpoint> has no template-file: ...`. The bare-`SELECT` refusal applies only to an explicit
 `template-file`.
+
+An endpoint whose template **modifies data** must declare `template-file` when it has an enabled cache.
+A write endpoint's `INSERT`/`UPDATE`/`DELETE` used as the populate SQL ran again on every warm-up,
+scheduled refresh and refresh-on-write (#276); so did a read whose template writes (an MCP-only tool
+with `method: POST` and no `operation:` is a read). The template is judged by DuckDB's parser, rendered
+with a sample value for every variable: any statement other than `SELECT`, `SET`, `PRAGMA`, `EXPLAIN`,
+`LOAD` or a `CREATE TABLE` of the cache table itself counts. Such an endpoint stops the whole server at
+startup, fails reload and `--validate-config`, and is refused by the config service, naming it:
+`POST /items: a write endpoint's cache needs template-file when its template modifies data (INSERT) ...`,
+plus the `template-file` of an already loaded endpoint serving the same table. A write endpoint whose
+template is a single `SELECT` (what `flapii endpoints wizard` writes) keeps the materialised fallback.
+A refresh that reaches a data-modifying template anyway is refused and audited as an `error`; the
+template is not run.
 
 Shared tables (several endpoints with the same `cache.table`) are warmed once, not once per endpoint.
 
@@ -2346,7 +2390,9 @@ operation:
   validate-before-write: true
 
 # The cache this write refreshes: name the read endpoint's table and populate template.
-# A write refreshes only the cache its OWN block names; without `table` nothing is refreshed.
+# A write refreshes only the cache its OWN block names (`table` is required in any cache block).
+# `template-file` is required here: this template writes, and without a template-file it
+# would be the populate SQL, run again on every refresh - the server refuses to start.
 cache:
   enabled: true
   table: products_cache

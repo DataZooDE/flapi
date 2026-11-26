@@ -180,6 +180,70 @@ TEST_CASE("ExtendedYamlParser: Section include test", "[extended_yaml_parser]") 
     }
 }
 
+// #282: `{{include:SECTION as KEY from FILE}}` inserts the section under KEY.
+// A plain section include keeps the section's own name, so a fragment file
+// holding `auth-prod:` could not become an endpoint's `auth:`.
+TEST_CASE("ExtendedYamlParser: Section include with `as` renames the key", "[extended_yaml_parser][include_as]") {
+    ExtendedYamlTestFixture fixture;
+    fixture.createTestFile("common/envs.yaml", R"(
+auth-prod:
+  enabled: true
+  type: basic
+auth-dev:
+  enabled: false
+)");
+    ExtendedYamlParser::IncludeConfig config;
+    config.allow_conditional_includes = true;
+    config.environment_whitelist = {"FLAPI_INCLUDE_AS_ENV"};
+    ExtendedYamlParser parser(config);
+
+    SECTION("as KEY") {
+        fixture.createTestFile("e1.yaml", "url-path: /x\n{{include:auth-prod as auth from common/envs.yaml}}\n");
+        auto result = parser.parseFile(fixture.getFilePath("e1.yaml"));
+        REQUIRE(result.success);
+        REQUIRE(result.node["auth"]);
+        REQUIRE(result.node["auth"]["type"].as<std::string>() == "basic");
+        REQUIRE_FALSE(result.node["auth-prod"]);
+        REQUIRE(result.node["url-path"].as<std::string>() == "/x");
+    }
+    SECTION("without as the section keeps its own name") {
+        fixture.createTestFile("e2.yaml", "url-path: /x\n{{include:auth-prod from common/envs.yaml}}\n");
+        auto result = parser.parseFile(fixture.getFilePath("e2.yaml"));
+        REQUIRE(result.success);
+        REQUIRE(result.node["auth-prod"]);
+        REQUIRE_FALSE(result.node["auth"]);
+    }
+    SECTION("as KEY with a condition") {
+        setenv("FLAPI_INCLUDE_AS_ENV", "prod", 1);
+        fixture.createTestFile("e3.yaml",
+                               "url-path: /x\n"
+                               "{{include:auth-prod as auth from common/envs.yaml if env.FLAPI_INCLUDE_AS_ENV}}\n");
+        auto result = parser.parseFile(fixture.getFilePath("e3.yaml"));
+        REQUIRE(result.success);
+        REQUIRE(result.node["auth"]["enabled"].as<bool>());
+        unsetenv("FLAPI_INCLUDE_AS_ENV");
+        auto skipped = parser.parseFile(fixture.getFilePath("e3.yaml"));
+        REQUIRE(skipped.success);
+        REQUIRE_FALSE(skipped.node["auth"]);
+    }
+    SECTION("the node-level include path renames too") {
+        fixture.createTestFile("e4.yaml", "url-path: /x\n");
+        YAML::Node node = YAML::Load("\"{{include:auth-dev as auth from common/envs.yaml}}\": x\n");
+        std::unordered_set<std::string> included;
+        REQUIRE(parser.preprocessIncludes(node, fixture.temp_dir, included));
+        // The processed key is the dumped include: `auth:\n  enabled: false`.
+        bool found = false;
+        for (const auto& item : node) {
+            const auto key = item.first.Scalar();
+            if (key.rfind("auth:", 0) == 0) {
+                found = true;
+            }
+            REQUIRE(key.find("auth-dev") == std::string::npos);
+        }
+        REQUIRE(found);
+    }
+}
+
 TEST_CASE("ExtendedYamlParser: Simple Environment Variable Test", "[extended_yaml_parser]") {
     // Whitelisted explicitly: an empty whitelist allows NOTHING (#157). This used
     // to run on a default parser and pass only because the default meant "allow

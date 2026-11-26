@@ -1880,6 +1880,55 @@ std::optional<std::string> DatabaseManager::MaterialiseSelect(const std::string&
     return "CREATE OR REPLACE TABLE " + qualifiedTarget(target) + " AS\n" + script;
 }
 
+std::optional<std::string> DatabaseManager::ServingScriptModification(const std::string& script,
+                                                                      const PopulateTarget& target) {
+    auto same = [](const std::string& a, const std::string& b) {
+        return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](unsigned char x, unsigned char y) {
+            return std::tolower(x) == std::tolower(y);
+        });
+    };
+    try {
+        auto parser = duckdb::Parser::GetBuiltinParser();
+        parser.ParseQuery(script);
+        for (const auto& statement : parser.statements) {
+            if (!statement) {
+                continue;
+            }
+            switch (statement->type) {
+                case duckdb::StatementType::SELECT_STATEMENT:
+                case duckdb::StatementType::SET_STATEMENT:
+                case duckdb::StatementType::VARIABLE_SET_STATEMENT:
+                case duckdb::StatementType::PRAGMA_STATEMENT:
+                case duckdb::StatementType::EXPLAIN_STATEMENT:
+                case duckdb::StatementType::TRANSACTION_STATEMENT:
+                case duckdb::StatementType::LOAD_STATEMENT:
+                    continue;
+                case duckdb::StatementType::CREATE_STATEMENT: {
+                    // Writing the cache table itself is what a populate does.
+                    const auto& info = statement->Cast<duckdb::CreateStatement>().info;
+                    if (info && info->type == duckdb::CatalogType::TABLE_ENTRY) {
+                        const auto& table = info->Cast<duckdb::CreateTableInfo>();
+                        const auto& name = info->GetQualifiedName();
+                        const std::string& schema = name.Schema().GetIdentifierName();
+                        const std::string& catalog = name.Catalog().GetIdentifierName();
+                        if (same(table.GetTableName().GetIdentifierName(), target.table) &&
+                            (schema.empty() || same(schema, target.schema)) &&
+                            (catalog.empty() || same(catalog, target.catalog))) {
+                            continue;
+                        }
+                    }
+                    return std::string("CREATE");
+                }
+                default:
+                    return duckdb::StatementTypeToString(statement->type);
+            }
+        }
+    } catch (const std::exception&) {
+        return std::string("unparseable SQL");
+    }
+    return std::nullopt;
+}
+
 std::string DatabaseManager::PopulateSelectError(const PopulateTarget& target, std::size_t statement,
                                                  std::size_t statement_count) {
     // A SELECT before the last statement is usually a guard or a debugging

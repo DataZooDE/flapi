@@ -171,7 +171,7 @@ YAML::Node ExtendedYamlParser::loadWithoutResolving(const std::filesystem::path&
 
     // Include directives are not YAML until they are expanded, and expanding
     // them needs the very variables being decided about.
-    static const std::regex include_directive(R"(\{\{include[^}]*\}\})");
+    static const std::regex include_directive(R"(\{\{\s*include[^}]*\}\})");
     content = std::regex_replace(content, include_directive, "");
 
     return YAML::Load(content);
@@ -272,7 +272,7 @@ std::string ExtendedYamlParser::preprocessContent(const std::string& content,
                                                  const std::filesystem::path& base_path,
                                                  std::unordered_set<std::string>& included_files) {
     std::string result = content;
-    std::regex include_regex(R"(\{\{include(?::([^}]+))?\s+from\s+((?:[^{}]|\{\{[^}]*\}\})*?)(?:\s+if\s+([^}]+))?\}\})");
+    std::regex include_regex(R"(\{\{\s*include(?::([^}]+))?\s+from\s+((?:[^{}]|\{\{[^}]*\}\})*?)(?:\s+if\s+([^}]*[^}\s]))?\s*\}\})");
 
     CROW_LOG_DEBUG << "preprocessContent called with content length: " << content.length();
 
@@ -404,7 +404,7 @@ std::string ExtendedYamlParser::preprocessContent(const std::string& content,
 
             // Extract section if specified
             if (include_info.is_section_include) {
-                included_node = extractSection(included_node, include_info.section_name);
+                included_node = extractSection(included_node, include_info.section_name, resolved_path.string());
             }
 
             // Convert to string and replace
@@ -414,7 +414,7 @@ std::string ExtendedYamlParser::preprocessContent(const std::string& content,
                 // For section includes, we need to preserve the section name
                 // Create a temporary node with the section name as the key
                 YAML::Node temp_node;
-                temp_node[include_info.section_name] = included_node;
+                temp_node[include_info.insertedKey()] = included_node;
                 replacement = YAML::Dump(temp_node);
                 
                 // Remove the YAML document markers (---, ...)
@@ -542,7 +542,7 @@ std::string ExtendedYamlParser::processIncludeDirectives(const std::string& inpu
                                                         const std::filesystem::path& base_path,
                                                         std::unordered_set<std::string>& included_files) {
     std::string result = input;
-    std::regex include_regex(R"(\{\{include(?::([^}]+))?\s+from\s+((?:[^{}]|\{\{[^}]*\}\})*?)(?:\s+if\s+([^}]+))?\}\})");
+    std::regex include_regex(R"(\{\{\s*include(?::([^}]+))?\s+from\s+((?:[^{}]|\{\{[^}]*\}\})*?)(?:\s+if\s+([^}]*[^}\s]))?\s*\}\})");
 
     auto matches_begin = std::sregex_iterator(input.begin(), input.end(), include_regex);
     auto matches_end = std::sregex_iterator();
@@ -616,7 +616,7 @@ std::string ExtendedYamlParser::processIncludeDirectives(const std::string& inpu
 
             // Extract section if specified
             if (include_info.is_section_include) {
-                included_node = extractSection(included_node, include_info.section_name);
+                included_node = extractSection(included_node, include_info.section_name, resolved_path.string());
             }
 
             // Convert to string and replace
@@ -626,16 +626,18 @@ std::string ExtendedYamlParser::processIncludeDirectives(const std::string& inpu
                 // For section includes, we need to preserve the section name
                 // Create a temporary node with the section name as the key
                 YAML::Node temp_node;
-                temp_node[include_info.section_name] = included_node;
+                temp_node[include_info.insertedKey()] = included_node;
                 replacement = YAML::Dump(temp_node);
                 
-                // Remove the leading "---" and trailing "..." that YAML::Dump adds
-                replacement = replacement.substr(replacement.find('\n') + 1);
-                replacement = replacement.substr(0, replacement.rfind('\n'));
-                // Remove extra indentation
-                size_t indent_pos = replacement.find(include_info.section_name + ":");
-                if (indent_pos != std::string::npos) {
-                    replacement = replacement.substr(indent_pos);
+                // Remove the document markers ("---", "...") YAML::Dump may add.
+                // This used to drop the first and last LINE unconditionally, and
+                // a dump has no "---": the section's own key line went with it.
+                if (replacement.rfind("---\n", 0) == 0) {
+                    replacement = replacement.substr(4);
+                }
+                const size_t dots_pos = replacement.rfind("\n...");
+                if (dots_pos != std::string::npos) {
+                    replacement = replacement.substr(0, dots_pos);
                 }
             } else {
                 replacement = YAML::Dump(included_node);
@@ -656,14 +658,16 @@ std::string ExtendedYamlParser::processIncludeDirectives(const std::string& inpu
 }
 
 bool ExtendedYamlParser::containsIncludeDirective(const std::string& str) const {
-    return str.find("{{include") != std::string::npos && str.find("}}") != std::string::npos;
+    // `{{ include ... }}` too: spaces inside the braces are allowed, as for `{{ env.X }}`.
+    static const std::regex directive_start(R"(\{\{\s*include)");
+    return std::regex_search(str, directive_start) && str.find("}}") != std::string::npos;
 }
 
 std::optional<ExtendedYamlParser::IncludeInfo> ExtendedYamlParser::parseIncludeDirective(const std::string& directive) const {
     // Parse "{{include:section from file.yaml}}" or "{{include from file.yaml}}"
     // Note: The file path should not contain ' if ' or '}}' to avoid confusion with conditional includes
     // Complex regex that handles nested braces in file paths (like {{env.VAR}})
-    std::regex directive_regex(R"(\{\{include(?::([^}]+))?\s+from\s+((?:[^{}]|\{\{[^}]*\}\})*?)(?:\s+if\s+([^}]+))?\}\})");
+    std::regex directive_regex(R"(\{\{\s*include(?::([^}]+))?\s+from\s+((?:[^{}]|\{\{[^}]*\}\})*?)(?:\s+if\s+([^}]*[^}\s]))?\s*\}\})");
 
     std::smatch match;
     if (!std::regex_search(directive, match, directive_regex)) {
@@ -683,10 +687,28 @@ std::optional<ExtendedYamlParser::IncludeInfo> ExtendedYamlParser::parseIncludeD
     CROW_LOG_DEBUG << "  match[3]='" << match[3].str() << "'";
     CROW_LOG_DEBUG << "  match.size()=" << match.size();
 
+    // `SECTION as KEY` (#282): the section is inserted under KEY. A section
+    // include otherwise keeps the section's own name, so `auth-prod` from a
+    // shared file could never become an endpoint's `auth:`.
+    std::string target_key;
+    {
+        static const std::regex as_regex(R"(^\s*(\S+)\s+as\s+(\S+)\s*$)");
+        std::smatch as_match;
+        if (std::regex_match(section, as_match, as_regex)) {
+            target_key = as_match[2].str();
+            section = as_match[1].str();
+        } else if (std::regex_search(section, std::regex(R"(\sas(\s|$))", std::regex::icase))) {
+            // `AS`, `as` with a missing key, ...: never looked up as a section name.
+            throw std::runtime_error("Invalid include directive '" + directive +
+                                     "': write {{include:SECTION as KEY from FILE}}");
+        }
+    }
+
     bool is_section_include = !section.empty();
     bool is_conditional = !condition.empty();
 
     IncludeInfo info(section, std::filesystem::path(file_path), is_section_include);
+    info.target_key = target_key;
     info.is_conditional = is_conditional;
     info.condition = condition;
 
@@ -739,12 +761,14 @@ YAML::Node ExtendedYamlParser::loadYamlFile(const std::filesystem::path& file_pa
     return YAML::Load(substituteEnvironmentVariables(ReadConfigFile(file_path)));
 }
 
-YAML::Node ExtendedYamlParser::extractSection(const YAML::Node& node, const std::string& section_name) {
+YAML::Node ExtendedYamlParser::extractSection(const YAML::Node& node, const std::string& section_name,
+                                              const std::string& file) {
     if (node[section_name]) {
         return node[section_name];
     }
 
-    throw std::runtime_error("Section '" + section_name + "' not found in YAML file");
+    throw std::runtime_error("Section '" + section_name + "' not found in " +
+                             (file.empty() ? std::string("YAML file") : "included file '" + file + "'"));
 }
 
 YAML::Node ExtendedYamlParser::mergeNodes(const YAML::Node& target, const YAML::Node& source) {

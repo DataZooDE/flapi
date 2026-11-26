@@ -485,3 +485,135 @@ class TestLogLevelAlias:
                              env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
         assert out.returncode != 0
         assert "log-level" in out.stdout + out.stderr
+
+
+def _write_root(endpoints):
+    root = tempfile.mkdtemp(prefix="flapi_write_cache_")
+    os.makedirs(os.path.join(root, "sqls"))
+    with open(os.path.join(root, "flapi.yaml"), "w") as f:
+        f.write(CONFIG)
+    for name, body in endpoints.items():
+        with open(os.path.join(root, "sqls", name), "w") as f:
+            f.write(body)
+    return root
+
+
+class TestWriteCacheNeedsTemplateFile:
+    """#276: a write endpoint's cache without template-file ran the write again.
+
+    Its populate SQL fell back to the endpoint's own template - the INSERT - so
+    every warm-up, scheduled refresh and refresh-on-write repeated the write and
+    recorded the refresh as a success. Such an endpoint is now a load error.
+    """
+
+    ENDPOINTS = {
+        **ENDPOINTS,
+        "write_sync.yaml": ENDPOINTS["write_sync.yaml"].replace("  template-file: items_cache.sql\n", ""),
+    }
+
+    def test_validate_config_names_the_endpoint(self):
+        assert "template-file" not in self.ENDPOINTS["write_sync.yaml"]
+        root = _write_root(self.ENDPOINTS)
+        r = subprocess.run([flapi_binary(), "-c", "flapi.yaml", "--validate-config"],
+                           cwd=root, capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, out
+        assert "/items_sync" in out, out[-2000:]
+        assert "a write endpoint's cache needs template-file" in out, out[-2000:]
+
+    def test_the_server_refuses_to_start(self):
+        root = _write_root(self.ENDPOINTS)
+        r = subprocess.run([flapi_binary(), "-c", "flapi.yaml", "-p", str(free_port())],
+                           cwd=root, capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, out[-2000:]
+        assert "a write endpoint's cache needs template-file" in out, out[-2000:]
+
+    def test_the_shipped_write_endpoints_still_load(self, server):
+        # The module's own write_sync/write_async declare template-file: they
+        # load, and a write runs once however often the cache refreshes.
+        TestWrites()._prime_cache(server)
+        r = requests.post(f"{server.base}/items_sync", json={"id": 501, "name": "once"}, timeout=30)
+        assert r.status_code == 201, r.text + "\n" + log_text(server)[-3000:]
+        rows = requests.get(f"{server.base}/items", auth=BOB, timeout=10).json()["data"]
+        assert [row["id"] for row in rows].count(501) == 1
+        TestWrites()._prime_cache(server)
+        assert TestWrites()._cached_ids(server).count(501) == 1
+
+
+def _start(root):
+    port = free_port()
+    log_path = os.path.join(root, "server.log")
+    log = open(log_path, "w")
+    proc = subprocess.Popen(
+        [flapi_binary(), "-c", "flapi.yaml", "-p", str(port), "--log-level", "info",
+         "--config-service", "--config-service-token", TOKEN],
+        cwd=root, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid,
+        env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
+    )
+    base = f"http://127.0.0.1:{port}"
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            pytest.fail("server exited:\n" + open(log_path).read())
+        try:
+            if requests.get(f"{base}/health/live", timeout=1).status_code == 200:
+                return proc, base, log
+        except requests.RequestException:
+            time.sleep(0.3)
+    pytest.fail("server never became live")
+
+
+def _stop(proc, log):
+    os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+    log.close()
+
+
+class TestWriteCacheReview:
+    """Review of #276: refuse only a template that modifies data."""
+
+    def _validate(self, endpoints):
+        root = _write_root(endpoints)
+        r = subprocess.run([flapi_binary(), "-c", "flapi.yaml", "--validate-config"],
+                           cwd=root, capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+        return r.returncode, r.stdout + r.stderr
+
+    def test_a_write_endpoint_with_a_select_template_loads(self):
+        # What `flapii endpoints wizard` writes: POST + cache, no template-file.
+        body = ENDPOINTS["write_sync.yaml"].replace("  template-file: items_cache.sql\n", "") \
+                                           .replace("template-source: create.sql", "template-source: one.sql")
+        code, out = self._validate({**ENDPOINTS, "write_sync.yaml": body})
+        assert code == 0, out[-2000:]
+        assert "needs template-file" not in out, out[-2000:]
+
+    def test_the_error_names_method_and_path(self):
+        code, out = self._validate(TestWriteCacheNeedsTemplateFile.ENDPOINTS)
+        assert code != 0
+        assert "POST /items_sync: a write endpoint's cache needs template-file" in out, out[-2000:]
+        assert "INSERT" in out, out[-2000:]
+
+    def test_the_legacy_in_memory_update_is_validated(self):
+        # A cached read without template-file over a SELECT is fine; the legacy
+        # camelCase update (applied in memory, unvalidated) could point it at the
+        # INSERT template, which every refresh would then run.
+        raw = ("url-path: /raw\ntemplate-source: one.sql\nconnection: [app]\nauth:\n  enabled: false\n"
+               "cache:\n  enabled: true\n  table: raw_cache\n  schema: main\n")
+        root = _write_root({**ENDPOINTS, "raw.yaml": raw})
+        proc, base, log = _start(root)
+        try:
+            body = {"urlPath": "/raw", "templateSource": os.path.join(root, "sqls", "create.sql")}
+            r = requests.put(f"{base}/api/v1/_config/endpoints/-raw", json=body, headers=CS_AUTH, timeout=10)
+            assert r.status_code == 400, r.text
+            assert "GET /raw" in r.text and "INSERT" in r.text, r.text
+            # Still the SELECT.
+            r = requests.get(f"{base}/api/v1/_config/endpoints/-raw", headers=CS_AUTH, timeout=10)
+            assert "one.sql" in r.text, r.text
+        finally:
+            _stop(proc, log)

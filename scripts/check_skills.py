@@ -388,7 +388,13 @@ def check_guide_checks_visible(rep: Report, snippets: list[Snippet]):
                                                       f"`{needle}`; give the reader the curl/flapii line too")
 
 
+INCLUDE_AS = re.compile(r"\{\{include:([A-Za-z0-9_-]+)\s+as\s+[A-Za-z0-9_-]+\s+from\b")
+
+
 def check_yaml_keys(rep: Report, snippets: list[Snippet], known: set[str]):
+    # A shared file's section that an example includes `as` another key
+    # (`{{include:auth-prod as auth from ...}}`) is a name the user chose.
+    known = known | {m.group(1) for s in snippets for m in INCLUDE_AS.finditer(s.body)}
     for s in snippets:
         if s.lang not in ("yaml", "yml"):
             continue

@@ -179,6 +179,13 @@ public:
     // AS <select>`; nullopt for anything else. Used for a cache with no
     // template-file, whose populate SQL is the endpoint's serving template.
     static std::optional<std::string> MaterialiseSelect(const std::string& script, const PopulateTarget& target);
+    // For a cache with no template-file, whose populate SQL is the endpoint's
+    // serving template: the first statement that would change data - its type,
+    // "INSERT", "DELETE", "CREATE" (anything but the cache table itself), ... -
+    // or nullopt when it only reads (SELECT, SET, PRAGMA, EXPLAIN, ...). A
+    // script DuckDB's parser cannot read is reported as "unparseable SQL" (#276).
+    static std::optional<std::string> ServingScriptModification(const std::string& script,
+                                                                const PopulateTarget& target);
     /// `statement_count` (0: unknown) tells a bare SELECT before the last
     /// statement - a guard whose result is discarded - from one that is the
     /// whole build.

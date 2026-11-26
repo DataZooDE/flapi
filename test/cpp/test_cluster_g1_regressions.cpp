@@ -47,7 +47,7 @@ public:
 
     std::string renderCacheTemplate(const EndpointConfig&, const CacheConfig& cache,
                                     std::map<std::string, std::string>&) override {
-        return "CREATE OR REPLACE TABLE x AS SELECT 1 -- " + cache.table;
+        return "CREATE OR REPLACE TABLE " + cache.table + " AS SELECT 1";
     }
     void executeDuckLakeQuery(const std::string&, const std::map<std::string, std::string>&) override {}
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {

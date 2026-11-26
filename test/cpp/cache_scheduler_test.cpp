@@ -43,12 +43,14 @@ public:
     std::optional<std::int64_t> snapshot_ms;
     std::atomic<bool> block{false};
     std::atomic<bool> interrupted{false};
-    std::string render_result = "CREATE OR REPLACE TABLE t AS SELECT 1";
+    // Empty: a populate that writes the cache table itself. (A CREATE of any
+    // other table is data-modifying, so a cache without template-file refuses it.)
+    std::string render_result;
 
-    std::string renderCacheTemplate(const EndpointConfig&, const CacheConfig&,
+    std::string renderCacheTemplate(const EndpointConfig&, const CacheConfig& cache,
                                     std::map<std::string, std::string>& params) override {
         rendered_params.push_back(params);
-        return render_result;
+        return render_result.empty() ? "CREATE OR REPLACE TABLE " + cache.table + " AS SELECT 1" : render_result;
     }
 
     void executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>&) override {
@@ -303,7 +305,8 @@ TEST_CASE("Endpoints sharing a cache table are warmed once", "[cache_manager][wa
     auto adapter = std::make_shared<SchedulerCacheAdapter>();
     CacheManager cache_manager(adapter);
     cache_manager.warmUpCaches(cm);
-    REQUIRE(adapter->count("CREATE OR REPLACE TABLE t AS SELECT 1") == 2);
+    REQUIRE(adapter->count("CREATE OR REPLACE TABLE shared AS SELECT 1") == 1);
+    REQUIRE(adapter->count("CREATE OR REPLACE TABLE other AS SELECT 1") == 1);
 }
 
 TEST_CASE("A cache that failed to build answers cache_build_failed", "[cache_manager][readiness]") {
@@ -349,7 +352,7 @@ TEST_CASE("A full refresh renders without the watermark and rebuilds", "[cache_m
 
     std::map<std::string, std::string> refresh_params;
     REQUIRE(cache_manager.refreshCache(cm, endpoint, refresh_params, CacheManager::RefreshOptions{true}));
-    REQUIRE(adapter->count("REBUILD CREATE OR REPLACE TABLE t") == 1);
+    REQUIRE(adapter->count("REBUILD CREATE OR REPLACE TABLE orders") == 1);
     REQUIRE(adapter->rendered_params.back().count("previousSnapshotTimestamp") == 0);
 }
 
@@ -510,13 +513,89 @@ TEST_CASE("A cache without template-file materialises its serving SELECT", "[cac
         REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\"") == 0);
         REQUIRE(adapter->count("'merge', 'success'") == 1);
     }
-    SECTION("a multi-statement serving template is not rewritten") {
+    SECTION("a multi-statement serving template that modifies data is neither rewritten nor run") {
+        // Review of #276: "DELETE FROM x; SELECT 1" used to run as the populate
+        // script, deleting on every refresh. Data-modifying: refused.
         adapter->render_result = "DELETE FROM x; SELECT 1";
         std::map<std::string, std::string> params;
-        REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+        REQUIRE_THROWS(cache_manager.refreshCache(cm, endpoint, params));
         REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\"") == 0);
+        REQUIRE(adapter->count("DELETE FROM x") == 0);
+    }
+    SECTION("a multi-statement serving template that only reads still runs as before") {
+        adapter->render_result = "SET threads = 2; CREATE OR REPLACE TABLE cache.main.orders AS SELECT 1";
+        std::map<std::string, std::string> params;
+        REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+        REQUIRE(adapter->count("SET threads = 2") == 1);
     }
     REQUIRE(DatabaseManager::MaterialiseSelect("SELECT 1;", PopulateTarget{"c", "s", "t"}) ==
             std::optional<std::string>("CREATE OR REPLACE TABLE \"c\".\"s\".\"t\" AS\nSELECT 1;"));
     REQUIRE_FALSE(DatabaseManager::MaterialiseSelect("CREATE TABLE x AS SELECT 1", PopulateTarget{"c", "s", "t"}).has_value());
+}
+
+// #276: a write endpoint's cache without template-file rendered the endpoint's
+// own INSERT as its populate SQL. MaterialiseSelect declined it (not a SELECT)
+// and the INSERT then ran as the populate script and was recorded as success -
+// every warm-up, scheduled refresh and refresh-on-write wrote the row again.
+// The load refuses such an endpoint; this guard covers what bypasses the load
+// (the config service, a reload of an edited file).
+TEST_CASE("A cache without template-file never runs a non-SELECT endpoint template", "[cache_manager][populate]") {
+    TempTestConfig temp(ducklakeConfig(""), "refuse_write_populate");
+    auto cm = temp.createConfigManager();
+    auto adapter = std::make_shared<SchedulerCacheAdapter>();
+    adapter->render_result = "INSERT INTO app.items (id, name) VALUES (7, 'x')";
+    CacheManager cache_manager(adapter);
+    auto endpoint = cachedEndpoint("orders");
+    endpoint.method = "POST";
+    endpoint.operation.type = OperationConfig::Write;
+
+    std::map<std::string, std::string> params;
+    std::string refused;
+    try {
+        cache_manager.refreshCache(cm, endpoint, params);
+    } catch (const std::exception& ex) {
+        refused = ex.what();
+    }
+    REQUIRE(refused.find("has no template-file") != std::string::npos);
+    REQUIRE(refused.find("not a single SELECT") != std::string::npos);
+    // The write never ran as a populate script...
+    REQUIRE(adapter->count("INSERT INTO app.items") == 0);
+    // ...and the refusal is audited as a failed refresh, not a success.
+    REQUIRE(adapter->count("'success'") == 0);
+    REQUIRE(adapter->count("'error'") == 1);
+
+    // A write endpoint whose template IS a single SELECT (operation.type: write
+    // over a read-only query) is still materialised.
+    adapter->render_result = "SELECT 1 AS id";
+    REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+    REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\".\"main\".\"orders\" AS\nSELECT 1 AS id") == 1);
+}
+
+// Review of #276: the guard keyed on operation.type, but an MCP-only tool with
+// `method: POST` and no `operation:` is a Read - its INSERT ran as the populate
+// script. Any data-modifying serving template is refused, whatever the type.
+TEST_CASE("A cache without template-file never runs a data-modifying template of a read endpoint",
+          "[cache_manager][populate][review]") {
+    TempTestConfig temp(ducklakeConfig(""), "refuse_read_insert_populate");
+    auto cm = temp.createConfigManager();
+    auto adapter = std::make_shared<SchedulerCacheAdapter>();
+    adapter->render_result = "INSERT INTO app.items (id) VALUES (7)";
+    CacheManager cache_manager(adapter);
+    auto endpoint = cachedEndpoint("orders");
+    endpoint.urlPath.clear();
+    EndpointConfig::MCPToolInfo tool;
+    tool.name = "add_item";
+    endpoint.mcp_tool = tool;
+    REQUIRE(endpoint.operation.type == OperationConfig::Read);
+
+    std::map<std::string, std::string> params;
+    std::string refused;
+    try {
+        cache_manager.refreshCache(cm, endpoint, params);
+    } catch (const std::exception& ex) {
+        refused = ex.what();
+    }
+    REQUIRE(refused.find("add_item") != std::string::npos);
+    REQUIRE(refused.find("INSERT") != std::string::npos);
+    REQUIRE(adapter->count("INSERT INTO app.items") == 0);
 }

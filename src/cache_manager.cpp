@@ -718,6 +718,9 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
 
     std::string rendered = renderRefreshTemplate(config_manager, endpoint, params, options.full);
     std::string sync_type = determineCacheMode(cacheConfig);
+    // Set when this refresh must not run at all; thrown inside the try below so
+    // the refusal is audited as a failed refresh like any other.
+    std::string refusal;
     if (!cacheConfig.template_file) {
         // No template-file: the populate SQL is the endpoint's SERVING template,
         // which is normally a bare SELECT over the source. That used to run, build
@@ -729,6 +732,19 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         if (auto materialised = DatabaseManager::MaterialiseSelect(rendered, PopulateTarget{catalog, schema, table})) {
             rendered = std::move(*materialised);
             sync_type = "full";
+        } else if (const auto modifies = DatabaseManager::ServingScriptModification(
+                       rendered, PopulateTarget{catalog, schema, table})) {
+            // #276: the serving template changes data - a write endpoint's
+            // INSERT/UPDATE/DELETE, or a read (an MCP-only POST tool without
+            // `operation:` is one) whose template writes. Run as the populate
+            // script it repeated that on every warm-up, scheduled refresh and
+            // refresh-on-write, and recorded success. The load refuses such an
+            // endpoint; this covers whatever reaches a refresh without that
+            // check. A template that only reads still runs as before.
+            const std::string name = !endpoint.urlPath.empty() ? endpoint.urlPath : endpoint.getName();
+            refusal = "cache on " + name + " has no template-file and the endpoint's template is not a "
+                      "single SELECT: it modifies data (" + *modifies + "), so it is not run as the populate "
+                      "script. Declare cache.template-file with SQL that rebuilds " + schema + "." + table;
         }
     }
     if (options.full) {
@@ -750,6 +766,9 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
     try {
         if (shutdown_requested_.load()) {
             throw std::runtime_error("server is shutting down; refresh not started");
+        }
+        if (!refusal.empty()) {
+            throw std::runtime_error(refusal);
         }
         {
             // The populate READS the source: on a SQLite attachment a concurrent

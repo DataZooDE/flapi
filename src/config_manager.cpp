@@ -1185,7 +1185,11 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
 
     size_t total_yaml_files = 0;
     size_t loaded_endpoints = 0;
+    size_t failed_files = 0;
     load_errors_.clear();
+    load_warnings_.clear();
+    endpoint_like_fragments_.clear();
+    files_included_by_endpoints_.clear();
     VFSReadMemoScope read_memo;  // each remote file is fetched once for the whole load
     // Refusing a template-source outside template.path protects a REMOTE origin (a bucket or URL that
     // someone else can write). A local configuration is the operator's own: `../shared/x.sql` there is
@@ -1200,7 +1204,7 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
     // One file at a time: normally the first failure aborts the load (a server
     // must not start with a file it could not read), but --validate-config
     // collects them all.
-    auto loadOne = [this](const std::string& file) {
+    auto loadOne = [this, &failed_files](const std::string& file) {
         try {
             loadEndpointConfig(file);
         } catch (const std::exception& e) {
@@ -1208,6 +1212,7 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
                 throw;
             }
             load_errors_.emplace_back(e.what());
+            ++failed_files;   // not "skipped": it is an endpoint that failed
         }
     };
 
@@ -1296,7 +1301,31 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
         throw std::runtime_error("Template path does not exist or is not a directory: " + template_path.string());
     }
     
-    size_t skipped_files = total_yaml_files - loaded_endpoints;
+    // A file with template-source/connection but no url-path or mcp-* key is
+    // a shared fragment when an endpoint includes it; otherwise most likely an
+    // endpoint whose identity key is missing, and it would 404 silently.
+    for (const auto& file : endpoint_like_fragments_) {
+        std::error_code ec;
+        const auto absolute = std::filesystem::absolute(file, ec).lexically_normal().string();
+        bool included = false;
+        for (const auto& inc : files_included_by_endpoints_) {
+            if (std::filesystem::path(inc).lexically_normal().string() == absolute) {
+                included = true;
+                break;
+            }
+        }
+        if (!included) {
+            const std::string warning = PathSchemeUtils::RedactUrl(file) +
+                                        ": not loaded as an endpoint: it has template-source or connection but no "
+                                        "url-path or mcp-* key, and no endpoint includes it";
+            CROW_LOG_WARNING << warning;
+            load_warnings_.push_back(warning);
+        }
+    }
+    endpoint_like_fragments_.clear();
+    files_included_by_endpoints_.clear();
+
+    size_t skipped_files = total_yaml_files - loaded_endpoints - failed_files;
     CROW_LOG_INFO << "Loaded " << loaded_endpoints << " endpoint configurations";
     if (skipped_files > 0) {
         CROW_LOG_INFO << "Skipped " << skipped_files << " non-endpoint YAML files (shared configs, templates, etc.)";
@@ -1314,9 +1343,18 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         if (!parse_result.success) {
             // Check if it's just not an endpoint file (vs a real error)
             if (parse_result.error_message.find("Not a valid endpoint configuration") != std::string::npos) {
-            CROW_LOG_DEBUG << "\t\tSkipping non-endpoint configuration file: " << config_file;
-            return; // Skip this file - it's likely a shared config or template
-        }
+                CROW_LOG_DEBUG << "\t\tSkipping non-endpoint configuration file: " << config_file;
+                for (const auto& warning : parse_result.warnings) {
+                    const std::string line = PathSchemeUtils::RedactUrl(config_file) + ": " + warning;
+                    CROW_LOG_WARNING << line;
+                    load_warnings_.push_back(line);
+                }
+                if (parse_result.endpoint_like_fragment && !PathSchemeUtils::IsRemotePath(config_file) &&
+                    FileProviderFactory::GetBundleContents() == nullptr) {
+                    endpoint_like_fragments_.push_back(config_file);
+                }
+                return; // Skip this file - it's likely a shared config or template
+            }
             std::string error_msg = "Parsing failed (no error message provided)";
             if (!parse_result.error_message.empty()) {
                 error_msg = parse_result.error_message;
@@ -1328,6 +1366,20 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         
         // Log parsed endpoint details
         CROW_LOG_DEBUG << "\t\t" << endpoint.getShortDescription();
+
+        files_included_by_endpoints_.insert(parse_result.included_files.begin(), parse_result.included_files.end());
+
+        // Surfaced at startup too, not only on reload: a key nothing reads
+        // (#282) - `auth-prod:` from a section include leaves the endpoint
+        // public - and a key that occurs twice (only the first is read).
+        for (const auto& key : endpoint.unknown_keys) {
+            CROW_LOG_WARNING << PathSchemeUtils::RedactUrl(config_file) << ": "
+                             << EndpointConfigParser::UnknownEndpointKeyWarning(key);
+        }
+        for (const auto& key : endpoint.duplicate_keys) {
+            CROW_LOG_WARNING << PathSchemeUtils::RedactUrl(config_file) << ": "
+                             << EndpointConfigParser::DuplicateEndpointKeyWarning(key);
+        }
         
         if (endpoint.isMCPPrompt()) {
             CROW_LOG_DEBUG << "\t\tTemplate Content: embedded in config";
@@ -1867,13 +1919,8 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
         }
     }
 
-    if (endpoint.cache.enabled && !endpoint.cache.table.empty() && !endpoint.cache.template_file) {
-        const std::string name = !endpoint.urlPath.empty() ? endpoint.urlPath : endpoint.templateSource;
-        CROW_LOG_WARNING << "cache on " << name
-                         << " has no template-file: its endpoint template is materialised with a full refresh; "
-                            "declare template-file for incremental refreshes and read the cache table from "
-                            "template-source";
-    }
+    // A cache without template-file is checked by EndpointConfigParser once the
+    // operation type is known (a write endpoint's is a load error, #276).
 
     CROW_LOG_DEBUG << "\t\tCache Enabled: " << (endpoint.cache.enabled ? "true" : "false");
     CROW_LOG_DEBUG << "\t\tCache Table: " << endpoint.cache.table;
@@ -4117,6 +4164,14 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         result.valid = false;
         result.errors.insert(result.errors.end(), self_errors.begin(), self_errors.end());
     }
+
+    // A key nothing reads (#282) - a warning, never an error.
+    for (const auto& key : config.unknown_keys) {
+        result.warnings.push_back(EndpointConfigParser::UnknownEndpointKeyWarning(key));
+    }
+    for (const auto& key : config.duplicate_keys) {
+        result.warnings.push_back(EndpointConfigParser::DuplicateEndpointKeyWarning(key));
+    }
     
     // Whether a template file exists, and the path to name when it does not.
     //
@@ -4339,7 +4394,13 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
             result.errors.push_back(*syntax);
         }
     }
-    
+    // #276: the YAML load refuses this too; repeated for endpoints built from
+    // JSON (the config service's legacy camelCase update validates with this).
+    if (auto problem = EndpointConfigParser::CacheTemplateFileProblem(config, *this)) {
+        result.valid = false;
+        result.errors.push_back(*problem);
+    }
+
     return result;
 }
 
@@ -4370,6 +4431,11 @@ void ConfigManager::persistEndpointConfigToFile(const EndpointConfig& config, co
 ConfigManager::ValidationResult ConfigManager::validateEndpointConfigFromYaml(const std::string& yaml_content) const {
     try {
         EndpointConfig config = deserializeEndpointConfigFromYaml(yaml_content);
+        // Unknown and duplicate keys too (#282), from the YAML as given: this
+        // fallback (a packed bundle, no scratch file) does not expand includes.
+        const YAML::Node node = YAML::Load(yaml_content);
+        config.unknown_keys = EndpointConfigParser::FindUnknownEndpointKeys(node);
+        config.duplicate_keys = EndpointConfigParser::FindDuplicateEndpointKeys(node);
         return validateEndpointConfig(config);
     } catch (const std::exception& e) {
         ValidationResult result;
