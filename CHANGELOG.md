@@ -70,6 +70,50 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   duplicate `auth` is a `SECURITY:` warning), and so does a file skipped as "not an endpoint"
   that looks like one (`urlpath:`, `mcp_tool:`, or `template-source` that no endpoint includes).
   The startup count of skipped files no longer includes files that failed to load.
+- **Shaped MCP results keep the column order and the exact numbers (#275).** A tool with
+  `mcp-tool.response` (`redact-columns`, `max-rows`, `sample`), every `resources/read`, and a
+  task's result under `tasks/get` came back with each row's keys in a different order and
+  doubles re-printed with 21 digits (`711.56` as `711.55999999999994543`). They now match an
+  unshaped `tools/call`: SELECT column order, shortest round-trip doubles.
+- **An async MCP tool that fails ends its task `failed` (#275).** It ended `completed` with
+  an `isError` result. `tasks/get` now answers `status: "failed"` with the message under
+  `error` and the `isError` result under `result`. The worker also runs under the identity of
+  the `tools/call` that submitted the task, so the message names its `request_id` (it said
+  only "The details are in the server log.").
+- **A `sample: true` tool's `structuredContent` is its summary (#275).** It was
+  `{"rows": {"sampled": true, ...}}`, a `rows` that is an object; it is now
+  `{"sampled": true, "row_count": N, "columns": [...]}`. The text block is unchanged.
+- **A dry run's `structuredContent` has no `rows` or `row_count` (#275).** `_dryRun: true`
+  added `"rows": []` and `"row_count": 0`, which read as a query that matched nothing; the
+  query never ran. `structuredContent` is now the preview itself, with `dry_run: true`.
+- **A dry run no longer echoes the injected identity.** `parameters` in a `_dryRun` preview
+  listed the `__auth_username`, `__auth_roles`, `__auth_email`, `__auth_type` and
+  `__auth_authenticated` values the server injects for `auth.*`; it now holds only the call's
+  arguments.
+- **MCP under `mcp.auth.type: basic` challenges with Basic (#275).** A `401` said
+  `WWW-Authenticate: Bearer`, and a role denial `Bearer error="insufficient_scope"`. A `401`
+  now says `Basic realm="flAPI"`, as REST does, and a `403` carries no challenge.
+- **A 403 for a missing `allowed-roles` no longer advises the caller.** It said "... or
+  disable mcp.auth to allow anonymous access" to the agent; it now says
+  `Tool 'x' is not available to your roles.` The operator hint is in the startup warning.
+- **Four new startup security warnings (#275).** `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is
+  on and a tool, resource or prompt has no `allowed-roles`, so every caller is refused.
+  `MCP_TOOL_BYPASSES_REST_AUTH`: `mcp.auth` is off and an endpoint whose REST route requires
+  authentication is also an `mcp-tool` (the warning names the endpoint).
+  `ENDPOINT_AUTH_KEY_IGNORED`: an endpoint file has an unread `auth*` key (`authentication:`)
+  and no `auth:` block. `ENDPOINT_DUPLICATE_AUTH_KEY`: an endpoint file has `auth` more than
+  once after include expansion; only the first is used, so a later `{{include:... as auth}}`
+  could leave the endpoint public.
+- **`completion/complete` accepts the MCP request shape.** `ref: {type, name}` and
+  `argument: {name, value}` work beside flAPI's plain strings, and its errors are escaped JSON.
+- **The learned `outputSchema` of a NULL column is `{}`.** It was `null`, which is not a JSON
+  Schema.
+- **An unauthenticated `initialize` says `Authentication required for method: initialize`**,
+  like every other method (it said `... for initialize`).
+- **`completion/complete` counts the matches (#275).** `total` counted every enum value
+  whatever the prefix, and the list (and the count) stopped at 50. `values` now holds up to
+  100 matching values, `total` is the number of matches, and `hasMore` says whether some were
+  left out.
 
 ### Upgrade notes
 
@@ -93,12 +137,32 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **Check `--validate-config` for `Unknown endpoint key` warnings.** A mis-named section include
   (`{{include:auth-prod from ...}}`) never applied; write `{{include:auth-prod as auth from ...}}`
   and the endpoint's auth takes effect, so clients without credentials then get `401`.
+- **A failing async tool's task is `failed`, not `completed`.** A client that read the
+  `isError` result of a `completed` task finds it under `result` of the `failed` task.
+- **`structuredContent` of a `sample: true` tool has no `rows`.** Read `row_count` and
+  `columns` from `structuredContent` itself, not from `structuredContent.rows`.
+- **A dry run's `structuredContent` has no `rows` or `row_count`.** Tell a preview from a
+  real result by `structuredContent.dry_run`, not by an empty `rows`.
+- **MCP task metrics.** The `mcp_task` series counts a task that ended `failed` because its
+  tool returned `isError` as a failure (it was a success). A task worker now runs under the
+  submitting request's identity with a clock that starts with the work, so the `mcp_tool`
+  latency of an async call is the execution alone, measured from the worker start.
+- **`--strict` is opt-in.** Run `flapi --validate-config --strict` first: the four new
+  warnings (`MCP_TOOL_NO_ALLOWED_ROLES`, `MCP_TOOL_BYPASSES_REST_AUTH`,
+  `ENDPOINT_AUTH_KEY_IGNORED`, `ENDPOINT_DUPLICATE_AUTH_KEY`) may appear on a config that printed none before, and with
+  `--strict` each one stops the start.
 
 ### Added
 
 - **`{{include:SECTION as KEY from FILE}}`** inserts a section under another key, also with
   `if env.X` (#282): a shared file can hold `auth-prod:` and `auth-dev:`, and an endpoint takes
   one as its `auth:`.
+- **`flapi --strict` (#275).** Security warnings become errors: `--validate-config --strict`
+  exits `1` when the auditor reports any, and `flapi --strict` refuses to start. A `--strict`
+  server also refuses (400) a config-service create/update or a `reload-file` whose endpoint
+  has a finding. The description scanner's findings now appear as security warnings
+  (`MCP_DESCRIPTION_*`) and count too. The `examples/` demo configs fail under `--strict` on
+  purpose. Without the flag nothing changes.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

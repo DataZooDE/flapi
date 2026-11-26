@@ -65,12 +65,10 @@ MCPAuthorizationPolicy::Decision MCPAuthorizationPolicy::authorizeRoles(
     }
 
     if (!allowed_roles.has_value()) {
-        return {
-            false,
-            entity_label + " has no allowed-roles configured while "
-            "mcp.auth.enabled is true. Add allowed-roles to the endpoint "
-            "config to expose it, or disable mcp.auth to allow anonymous access."
-        };
+        // The reason reaches the CALLER (an agent). It is told the entity is
+        // not for it; how to configure the server is the operator's business,
+        // said by the startup warning MCP_TOOL_NO_ALLOWED_ROLES.
+        return {false, entity_label + " is not available to your roles."};
     }
 
     if (anyRoleMatches(user_roles, *allowed_roles)) {

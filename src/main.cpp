@@ -670,6 +670,12 @@ int main(int argc, char* argv[])
         .default_value(false)
         .implicit_value(true);
 
+    program.add_argument("--strict")
+        .help("Treat security warnings as errors: --validate-config exits non-zero and the "
+              "server refuses to start while the security auditor reports any warning")
+        .default_value(false)
+        .implicit_value(true);
+
     program.add_argument("--config-service")
         .help("Enable the configuration service API")
         .default_value(false)
@@ -1119,6 +1125,7 @@ int main(int argc, char* argv[])
     std::string cmd_host = program.get<std::string>("--host");
     std::string log_level = program.get<std::string>("--log-level");
     bool validate_config = program.get<bool>("--validate-config");
+    const bool strict = program.get<bool>("--strict");
 
     // Cache warm-up override. Precedence: --no-cache-warmup > --cache-warmup > FLAPI_CACHE_WARMUP.
     // Checked before anything is loaded: a typo must not start a server that warms everything.
@@ -1306,16 +1313,34 @@ int main(int argc, char* argv[])
                               : flapi::FlapiLogHandler::Format::Text);
 
     // Surface configuration-level security warnings (plaintext passwords, MCP without auth, etc.)
-    // Runs in both --validate-config mode and normal server start; never aborts startup.
+    // Runs in both --validate-config mode and normal server start. They abort only under
+    // --strict: validation then fails, and the server refuses to start.
+    std::optional<std::string> strict_refusal;
     {
         SecurityAuditor auditor;
-        printSecurityWarnings(auditor.audit(*config_manager));
+        const auto warnings = auditor.audit(*config_manager);
+        printSecurityWarnings(warnings);
+        if (strict) {
+            strict_refusal = SecurityAuditor::strictRefusal(warnings);
+        }
     }
 
     // If validate-config flag is set, validate and exit
     if (validate_config) {
-        return validateConfiguration(config_manager, config_file);
+        const int rc = validateConfiguration(config_manager, config_file);
+        if (strict_refusal) {
+            std::cerr << "✗ " << *strict_refusal << std::endl;
+            return 1;
+        }
+        return rc;
     }
+    if (strict_refusal) {
+        std::cerr << "✗ Refusing to start. " << *strict_refusal << std::endl;
+        return 1;
+    }
+    // From here on, an endpoint created or reloaded at run time is audited
+    // too and refused when it has a security warning.
+    config_manager->setStrictSecurity(strict);
 
     // Resolve no_telemetry: CLI flag > FLAPI_NO_TELEMETRY env > config file
     if (!no_telemetry) {

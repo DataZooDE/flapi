@@ -95,8 +95,9 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
     const auto t0 = std::chrono::steady_clock::now();
     // The metric is the request's latency as the client sees it: from the
     // first middleware, so MCP authentication (a PBKDF2 check under Basic) is
-    // inside it. A task worker thread has no request in scope and measures
-    // the execution alone.
+    // inside it. A task worker thread runs under a copy of the submitting
+    // request's identity whose clock starts with the work (MCPTaskManager), so
+    // it measures the execution alone.
     const auto* request_ctx = RequestContextScope::current();
     const auto metric_t0 = request_ctx != nullptr ? request_ctx->t0 : t0;
     MCPToolExecutionResult result = executeToolImpl(request);
@@ -374,29 +375,28 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
                 return createErrorResult(errors.front().errorMessage,
                                          MCPToolExecutionResult::FailureKind::InvalidArguments);
             }
-        QueryResult query_result = executeQueryWithEndpoint(*endpoint_config, params);
+        // W2.4 response shaping: redact columns / cap rows / collapse to sample
+        // summary per the tool's `mcp-tool.response` config. No-op when the
+        // operator hasn't configured anything.
+        ResponseShape shape_config;
+        if (endpoint_config->mcp_tool) {
+            const auto& shape_yaml = endpoint_config->mcp_tool->response;
+            shape_config.max_rows = shape_yaml.max_rows;
+            shape_config.redact_columns = shape_yaml.redact_columns;
+            shape_config.sample = shape_yaml.sample;
+        }
+        const bool shaped = !shape_config.isNoOp();
+
+        // A shaped result is shaped from the rows themselves (data + columns),
+        // never by re-parsing the JSON text: that scrambled the column order
+        // and re-printed every double with 21 digits (#275).
+        QueryResult query_result = executeQueryWithEndpoint(*endpoint_config, params, /*stream=*/!shaped);
 
         // Empty result sets are valid - they just mean no rows matched the criteria
         // Format the result (will be an empty array if no data)
         std::string result_format = endpoint_config->mcp_tool ? endpoint_config->mcp_tool->result_mime_type : "application/json";
-        std::string formatted_result = formatResult(query_result, result_format);
-
-        // W2.4 response shaping: redact columns / cap rows / collapse to sample
-        // summary per the tool's `mcp-tool.response` config. No-op when the
-        // operator hasn't configured anything.
-        bool shaped = false;
-        if (endpoint_config->mcp_tool) {
-            const auto& shape_yaml = endpoint_config->mcp_tool->response;
-            ResponseShape shape_config;
-            shape_config.max_rows = shape_yaml.max_rows;
-            shape_config.redact_columns = shape_yaml.redact_columns;
-            shape_config.sample = shape_yaml.sample;
-            if (!shape_config.isNoOp()) {
-                MCPResponseShaper shaper;
-                formatted_result = shaper.shape(formatted_result, shape_config);
-                shaped = true;
-            }
-        }
+        std::string formatted_result = shaped ? MCPResponseShaper().shape(query_result, shape_config)
+                                              : formatResult(query_result, result_format);
 
         // Create metadata
         std::unordered_map<std::string, std::string> metadata;
@@ -405,6 +405,11 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         metadata["execution_time_ms"] = "0"; // Simplified
         if (shaped) {
             metadata["response_shaped"] = "true";
+        }
+        if (shape_config.sample) {
+            // The result is a summary object, not rows: it is the tool's
+            // structuredContent as is (toolPayloadOf).
+            metadata["response_sampled"] = "true";
         }
 
         emit_audit("success", static_cast<std::int64_t>(query_result.rowCount()));
@@ -426,7 +431,7 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         // and indexed.
         const std::string public_detail =
             publicErrorMessage("Tool execution error", e.what(), secrets);
-        CROW_LOG_ERROR << "for tool " << request.tool_name << ": " << public_detail;
+        CROW_LOG_ERROR << "MCP tool '" << request.tool_name << "' failed: " << public_detail;
         // What reaches the CALLER is what a REST client gets for the same
         // failure. A bad argument the model can fix keeps its message; anything
         // else is a generic line plus the request id. The detail used to go
@@ -601,10 +606,14 @@ std::map<std::string, std::string> MCPToolHandler::prepareParameters(
 }
 
 QueryResult MCPToolHandler::executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
-                                                   std::map<std::string, std::string>& params) const {
+                                                   std::map<std::string, std::string>& params,
+                                                   bool stream) const {
     // Use the database manager to execute the query
     // The tool result carries only the rows (formatResult), so the COUNT a REST page runs for
     // total_count would be thrown away: skip it.
+    if (!stream) {
+        return db_manager->executeQuery(endpoint_config, params, true, DatabaseManager::TotalCount::Skip);
+    }
     // Rows go straight into JSON text (no JSON tree of the whole result).
     std::string text = "[";
     std::vector<std::string> columns;

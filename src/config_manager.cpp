@@ -29,6 +29,7 @@
 #include <crow.h>
 #include <iomanip>
 #include <crow/logging.h>
+#include "security_auditor.hpp"
 #include <openssl/sha.h>
 #include <array>
 
@@ -1391,6 +1392,11 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         // both listed, and only one answered - whichever routing found first.
         if (const auto duplicate = DuplicateEndpointProblem(endpoint); !duplicate.empty()) {
             throw std::runtime_error(duplicate);
+        }
+        // A full reload under --strict (the flag is set only after the
+        // startup audit passed, so startup itself is judged by main()).
+        if (const auto refused = StrictSecurityProblem(endpoint); !refused.empty()) {
+            throw std::runtime_error(refused);
         }
         LogRouteOverlaps(endpoint);
 
@@ -3736,6 +3742,22 @@ bool skippedFor(const EndpointConfig& ep, const EndpointConfig& candidate, const
 
 }  // namespace
 
+std::string ConfigManager::StrictSecurityProblem(const EndpointConfig& candidate) const {
+    if (!isStrictSecurity()) {
+        return "";
+    }
+    const auto findings = SecurityAuditor().auditEndpoint(candidate, *this);
+    if (findings.empty()) {
+        return "";
+    }
+    std::string problem = "Refused under --strict: the endpoint has " + std::to_string(findings.size()) +
+                          " security warning(s):";
+    for (const auto& w : findings) {
+        problem += " [" + w.code + "] " + w.message;
+    }
+    return problem;
+}
+
 std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candidate,
                                                     const EndpointConfig* replacing) const {
     const auto where = [](const EndpointConfig& ep) {
@@ -4636,6 +4658,12 @@ ConfigManager::FileReloadResult ConfigManager::reloadEndpointFile(const std::fil
             result.status = 409;
             result.error = duplicate;
             CROW_LOG_ERROR << "Failed to reload " << file << ": " << duplicate;
+            return result;
+        }
+        if (const auto refused = StrictSecurityProblem(fresh); !refused.empty()) {
+            result.status = 400;
+            result.error = refused;
+            CROW_LOG_ERROR << "Failed to reload " << file << ": " << refused;
             return result;
         }
         LogRouteOverlaps(fresh);

@@ -1,4 +1,5 @@
 #include "mcp_route_handlers.hpp"
+#include "auth_middleware.hpp"
 #include "template_secrets.hpp"
 #include "request_context.hpp"
 #include "trace_context.hpp"
@@ -20,25 +21,12 @@ namespace flapi {
 // ========== Helper function implementations ==========
 
 std::string MCPRouteHandlers::formatJsonRpcError(int code, const std::string& message) {
-    // Escape quotes in message for JSON safety
-    std::string escaped_message;
-    escaped_message.reserve(message.size());
-    for (char c : message) {
-        if (c == '"') {
-            escaped_message += "\\\"";
-        } else if (c == '\\') {
-            escaped_message += "\\\\";
-        } else if (c == '\n') {
-            escaped_message += "\\n";
-        } else if (c == '\r') {
-            escaped_message += "\\r";
-        } else if (c == '\t') {
-            escaped_message += "\\t";
-        } else {
-            escaped_message += c;
-        }
-    }
-    return "{\"code\":" + std::to_string(code) + ",\"message\":\"" + escaped_message + "\"}";
+    // crow's escaper: quotes, backslashes and every control character, so a
+    // caller-supplied name in the message cannot break out of the string.
+    std::string out = "{\"code\":" + std::to_string(code) + ",\"message\":\"";
+    crow::json::escape(message, out);
+    out += "\"}";
+    return out;
 }
 
 MCPResponse MCPRouteHandlers::initResponse(const MCPRequest& request) {
@@ -248,19 +236,36 @@ std::string MCPRouteHandlers::buildResourceMetadataUrl(const crow::request& http
     return origin + "/.well-known/oauth-protected-resource";
 }
 
-std::string MCPRouteHandlers::buildWwwAuthenticate(const crow::request& http_req, bool insufficient_scope) const {
+std::string mcpWwwAuthenticate(const std::string& auth_type, const std::string& resource_metadata_url,
+                               bool insufficient_scope) {
+    if (auth_type == "basic") {
+        // The scheme the server accepts. It always said Bearer, so a client
+        // configured for Basic was told to send a token it cannot have.
+        if (insufficient_scope) {
+            return "";
+        }
+        return AuthMiddleware::challengeFor("basic", /*credentials_sent=*/false);
+    }
     std::string value = "Bearer";
-    const auto& auth = config_manager_->getMCPConfig().auth;
-    // Point clients at the metadata document only when there is an OAuth/OIDC
-    // authorization server to discover.
-    if (auth.type == "oidc" && auth.oidc.has_value()) {
-        value += " resource_metadata=\"" + buildResourceMetadataUrl(http_req) + "\"";
+    if (!resource_metadata_url.empty()) {
+        value += " resource_metadata=\"" + resource_metadata_url + "\"";
     }
     if (insufficient_scope) {
         value += (value == "Bearer" ? " " : ", ");
         value += "error=\"insufficient_scope\"";
     }
     return value;
+}
+
+std::string MCPRouteHandlers::buildWwwAuthenticate(const crow::request& http_req, bool insufficient_scope) const {
+    const auto& auth = config_manager_->getMCPConfig().auth;
+    // Point clients at the metadata document only when there is an OAuth/OIDC
+    // authorization server to discover.
+    std::string metadata_url;
+    if (auth.type == "oidc" && auth.oidc.has_value()) {
+        metadata_url = buildResourceMetadataUrl(http_req);
+    }
+    return mcpWwwAuthenticate(auth.type, metadata_url, insufficient_scope);
 }
 
 namespace {
@@ -284,28 +289,63 @@ std::string mcpAuthFailureError(const crow::request& http_req, const std::string
     return err.dump();
 }
 
+}  // namespace
+
 // A successful tools/call result: the rows as a text block and, when they are
 // JSON, as structuredContent too. The rows go in as the TEXT the tool handler
 // produced (columns in SELECT/RETURNING order, shortest doubles); routing them
 // through a wvalue scrambled the keys of every row object.
-std::string toolSuccessResultJson(const std::string& result_text) {
+std::string toolSuccessResultJson(const std::string& result_text, ToolPayload payload) {
     mcp::ContentResponse content_response;
     content_response.addText(result_text);
     std::string out = content_response.toJson().dump();
-    const auto rows = crow::json::load(result_text);
-    if (!rows) {
+    const auto parsed = crow::json::load(result_text);
+    if (!parsed) {
         return out;
     }
-    std::string structured = "{\"rows\":" + result_text;
-    if (rows.t() == crow::json::type::List) {
-        structured += ",\"row_count\":" + std::to_string(rows.size());
+    std::string structured;
+    if (payload == ToolPayload::Summary && parsed.t() == crow::json::type::Object) {
+        // A summary describes the call; wrapping it as `rows` made `rows` an
+        // object, against an outputSchema that says it is an array.
+        structured = result_text;
+    } else {
+        structured = "{\"rows\":" + result_text;
+        if (parsed.t() == crow::json::type::List) {
+            structured += ",\"row_count\":" + std::to_string(parsed.size());
+        }
+        structured += '}';
     }
-    structured += '}';
     const auto close = out.find_last_of('}');
     return out.substr(0, close) + ",\"structuredContent\":" + structured + out.substr(close);
 }
 
-}  // namespace
+CompletionValues completeEnumValues(const std::vector<std::string>& allowed, const std::string& prefix) {
+    // Counts the MATCHES. It counted every enum value, and stopped counting at
+    // the 50-value cut, so `total` was neither the matches nor the enum size.
+    CompletionValues out;
+    for (const auto& value : allowed) {
+        if (value.compare(0, prefix.size(), prefix) != 0) {
+            continue;
+        }
+        ++out.total;
+        if (out.values.size() < CompletionValues::kMaxValues) {
+            out.values.push_back(value);
+        }
+    }
+    out.has_more = out.total > out.values.size();
+    return out;
+}
+
+ToolPayload toolPayloadOf(const std::unordered_map<std::string, std::string>& metadata) {
+    // A sample summary and a dry-run preview describe the call; neither has rows.
+    for (const char* key : {"response_sampled", "dry_run"}) {
+        const auto it = metadata.find(key);
+        if (it != metadata.end() && it->second == "true") {
+            return ToolPayload::Summary;
+        }
+    }
+    return ToolPayload::Rows;
+}
 
 // ========== End helper functions ==========
 
@@ -582,7 +622,7 @@ void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
                             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
                             MCPResponse mcp_response;
                             mcp_response.id = mcp_request->id;
-                            mcp_response.error = mcpAuthFailureError(req, "initialize");
+                            mcp_response.error = mcpAuthFailureError(req, "method: initialize");
                             mcp_response.http_status = 401;
                             mcp_response.www_authenticate = buildWwwAuthenticate(req, /*insufficient_scope=*/false);
                             return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
@@ -794,7 +834,11 @@ void MCPRouteHandlers::cacheOutputSchemaFromRows(const std::string& tool_name,
             case crow::json::type::String: col["type"] = "string"; break;
             case crow::json::type::List:   col["type"] = "array"; break;
             case crow::json::type::Object: col["type"] = "object"; break;
-            default: break;  // null/unknown: leave type unset
+            default:
+                // NULL in the first row: the empty schema (any value). A bare
+                // null is not a JSON Schema at all.
+                col = crow::json::wvalue::object();
+                break;
         }
         row_props[key] = std::move(col);
     }
@@ -1423,12 +1467,19 @@ MCPResponse MCPRouteHandlers::handleTasksGetRequest(const MCPRequest& request, c
 
         crow::json::wvalue result;
         result["task"] = taskToJson(task);
-        if (task.status == MCPTaskManager::Status::Completed) {
-            result["result"] = crow::json::load(task.result_json);
-        } else if (task.status == MCPTaskManager::Status::Failed) {
+        if (task.status == MCPTaskManager::Status::Failed) {
             result["error"] = task.error_message;
         }
-        response.result = result.dump();
+        std::string text = result.dump();
+        // The tool result is spliced in as TEXT: loading it into a crow value
+        // re-ordered the row keys and re-printed the doubles (#275). A task
+        // that failed because the tool returned isError keeps that result too.
+        const bool has_result = task.status == MCPTaskManager::Status::Completed
+            || task.status == MCPTaskManager::Status::Failed;
+        if (has_result && !task.result_json.empty() && crow::json::load(task.result_json)) {
+            text.insert(text.find_last_of('}'), ",\"result\":" + task.result_json);
+        }
+        response.result = text;
     } catch (const std::exception& e) {
         response.error = formatJsonRpcError(-32603, "tasks/get error: " + std::string(e.what()));
     }
@@ -1478,7 +1529,7 @@ MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request,
         auth_context = auth_handler_->authenticate(http_req);
         if (!auth_context) {
             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
-            response.error = mcpAuthFailureError(http_req, "initialize");
+            response.error = mcpAuthFailureError(http_req, "method: initialize");
             response.http_status = 401;
             response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/false);
             return response;
@@ -1754,12 +1805,20 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                         });
                         auto r = handler->executeTool(tool_request);
                         if (r.success) {
-                            return toolSuccessResultJson(r.result);
+                            return toolSuccessResultJson(r.result, toolPayloadOf(r.metadata));
+                        }
+                        // A tool that ran and failed ends the task `failed`
+                        // (it used to end `completed`), keeping the isError
+                        // result so the client still gets the tool's text.
+                        std::string message = r.error_message;
+                        auto rl = r.metadata.find("retry_after_seconds");
+                        if (rl != r.metadata.end()) {
+                            message += " (retry_after_seconds=" + rl->second + ")";
                         }
                         mcp::ContentResponse cr;
-                        cr.addText(r.error_message);
+                        cr.addText(message);
                         cr.setError(true);
-                        return cr.toJson().dump();
+                        throw MCPTaskManager::FailedResult(message, cr.toJson().dump());
                     };
 
                     std::string task_id = task_manager_->submit(
@@ -1783,10 +1842,14 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                             if (task_manager_->get(task_id, principal, t, found)
                                 && t.status != MCPTaskManager::Status::Working) {
                                 // Reached a terminal state within the grace window:
-                                // return the result inline if completed, otherwise
-                                // stop waiting and hand back the task (whose status
-                                // is failed/cancelled) so the client polls it.
-                                if (t.status == MCPTaskManager::Status::Completed) {
+                                // return the result inline if completed, or if the
+                                // tool failed with an isError result (as a
+                                // synchronous call would answer); otherwise stop
+                                // waiting and hand back the task so the client
+                                // polls it.
+                                const bool tool_failed = t.status == MCPTaskManager::Status::Failed
+                                    && !t.result_json.empty();
+                                if (t.status == MCPTaskManager::Status::Completed || tool_failed) {
                                     response.result = t.result_json;
                                     return response;
                                 }
@@ -1814,21 +1877,11 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     // text block.
                     const auto dry = result.metadata.find("dry_run");
                     const bool is_dry_run = dry != result.metadata.end() && dry->second == "true";
-                    auto parsed_rows = is_dry_run ? crow::json::load(result.result) : crow::json::rvalue();
-                    if (parsed_rows && is_dry_run) {
-                        // A dry run returned no rows: `rows` stays the array the
-                        // outputSchema promises (it was the preview OBJECT), and
-                        // the preview fields sit beside it.
-                        mcp::ContentResponse content_response;
-                        content_response.addText(result.result);
-                        crow::json::wvalue structured(parsed_rows);
-                        structured["rows"] = crow::json::wvalue::list();
-                        structured["row_count"] = 0;
-                        content_response.setStructuredContent(std::move(structured));
-                        response.result = content_response.toJson().dump();
-                    } else {
-                        response.result = toolSuccessResultJson(result.result);
-                    }
+                    // A dry run's structuredContent is the preview itself
+                    // (dry_run: true, rendered_sql, bindings, parameters). It
+                    // used to add rows: [] and row_count: 0, which read as
+                    // "the query matched nothing" when it never ran.
+                    response.result = toolSuccessResultJson(result.result, toolPayloadOf(result.metadata));
                     // Learn this tool's outputSchema from the real result columns
                     // so a subsequent tools/list can advertise it - never from a
                     // dry-run preview, whose shape is not the tool's.
@@ -2205,14 +2258,16 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(
             // it used to throw "Resource query returned no data" -> -32603.
             // dumpData(): columns in SELECT order, shortest doubles.
             const size_t row_count = query_result.data.size();
-            std::string result_text = row_count > 0 ? query_result.dumpData() : std::string("[]");
 
             // Response shaping: mcp-resource.response, else the same file's
             // mcp-tool.response, and max-rows defaults to a cap either way.
+            // Shaped from the rows, not from re-parsed text: that scrambled
+            // the column order and re-printed doubles with 21 digits (#275).
             const auto shape = resourceResponseShape(resource_config);
             const bool truncated = shape.max_rows.has_value() && row_count > *shape.max_rows;
-            if (!shape.isNoOp() && row_count > 0) {
-                result_text = MCPResponseShaper().shape(result_text, shape);
+            std::string result_text = "[]";
+            if (row_count > 0) {
+                result_text = MCPResponseShaper().shape(query_result, shape);
             }
 
             // Convert the result to MCP resource content format
@@ -2521,33 +2576,45 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
             return response;
         }
 
-        // Extract ref (reference to tool/prompt)
-        auto ref_value = request.params["ref"];
-        std::string ref_str;
-        if (JsonUtils::isString(ref_value)) {
-            ref_str = JsonUtils::extractString(ref_value);
-        } else {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: 'ref' must be a string\"}";
-            return response;
-        }
-
-        // Extract argument name
-        auto arg_value = request.params["argument"];
-        std::string argument_name;
-        if (JsonUtils::isString(arg_value)) {
-            argument_name = JsonUtils::extractString(arg_value);
-        } else {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: 'argument' must be a string\"}";
-            return response;
-        }
-
-        // Extract optional value (prefix) for filtering
-        std::string value_prefix;
-        if (request.params.count("value") > 0) {
-            auto value_val = request.params["value"];
-            if (JsonUtils::isString(value_val)) {
-                value_prefix = JsonUtils::extractString(value_val);
+        // Two request shapes are accepted:
+        //  - MCP:   ref {type, name}, argument {name, value}
+        //  - flAPI: ref "<name>", argument "<name>", value "<prefix>"
+        // Strings are read through a parse of the wvalue's JSON text, so a
+        // name holding a quote or backslash is the real string, not its
+        // escaped form.
+        const auto readString = [](const crow::json::wvalue& v, std::string& out) {
+            const auto parsed = crow::json::load(v.dump());
+            if (!parsed || parsed.t() != crow::json::type::String) {
+                return false;
             }
+            out = std::string(parsed.s());
+            return true;
+        };
+        const auto memberString = [&](const crow::json::wvalue& obj, const char* key, std::string& out) {
+            return obj.t() == crow::json::type::Object && obj.count(key) > 0 && readString(obj[key], out);
+        };
+
+        const auto& ref_value = request.params["ref"];
+        std::string ref_str;
+        if (!readString(ref_value, ref_str) && !memberString(ref_value, "name", ref_str)) {
+            response.error = formatJsonRpcError(
+                -32602, "Invalid params: 'ref' must be a name or an object with a 'name'");
+            return response;
+        }
+
+        const auto& arg_value = request.params["argument"];
+        std::string argument_name;
+        std::string value_prefix;
+        if (readString(arg_value, argument_name)) {
+            if (request.params.count("value") > 0) {
+                readString(request.params["value"], value_prefix);
+            }
+        } else if (memberString(arg_value, "name", argument_name)) {
+            memberString(arg_value, "value", value_prefix);
+        } else {
+            response.error = formatJsonRpcError(
+                -32602, "Invalid params: 'argument' must be a name or an object with a 'name'");
+            return response;
         }
 
         CROW_LOG_DEBUG << "Completion request: ref=" << ref_str << ", argument=" << argument_name
@@ -2565,7 +2632,7 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
         }
 
         if (!endpoint) {
-            response.error = "{\"code\":-32602,\"message\":\"Reference not found: " + ref_str + "\"}";
+            response.error = formatJsonRpcError(-32602, "Reference not found: " + ref_str);
             return response;
         }
 
@@ -2579,41 +2646,30 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
         }
 
         if (!matching_field) {
-            response.error = "{\"code\":-32602,\"message\":\"Argument not found: " + argument_name + "\"}";
+            response.error = formatJsonRpcError(-32602, "Argument not found: " + argument_name);
             return response;
         }
 
         // Build completion suggestions based on validators
         crow::json::wvalue completion;
         crow::json::wvalue values = crow::json::wvalue::list();
-        int total_count = 0;
-        bool has_more = false;
+        CompletionValues matches;
 
         // Check for enum validator to provide enum values
         for (const auto& validator : matching_field->validators) {
             if (validator.type == "enum" && validator.allowedValues.size() > 0) {
-                // Filter enum values based on prefix
-                int added_count = 0;
-                for (const auto& enum_val : validator.allowedValues) {
-                    if (value_prefix.empty() || enum_val.find(value_prefix) == 0) {
-                        if (added_count < 50) {  // Limit results to 50
-                            values[added_count] = enum_val;
-                            added_count++;
-                        } else {
-                            has_more = true;
-                            break;
-                        }
-                    }
-                    total_count++;
-                }
+                matches = completeEnumValues(validator.allowedValues, value_prefix);
                 break;
             }
+        }
+        for (std::size_t i = 0; i < matches.values.size(); ++i) {
+            values[static_cast<unsigned>(i)] = matches.values[i];
         }
 
         // If no enum validator, return empty completion (client can use its own methods)
         completion["values"] = std::move(values);
-        completion["total"] = total_count;
-        completion["hasMore"] = has_more;
+        completion["total"] = static_cast<int64_t>(matches.total);
+        completion["hasMore"] = matches.has_more;
 
         // The spec wraps the payload under a "completion" key:
         // { "completion": { "values": [...], "total": N, "hasMore": bool } }.

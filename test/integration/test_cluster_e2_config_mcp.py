@@ -349,7 +349,8 @@ def test_expand_and_dry_run_show_bindings(server):
 
     dry = server.rpc("tools/call", {"name": "lookup", "arguments": {"limit": 3, "_dryRun": True}})
     sc = dry["result"]["structuredContent"]
-    assert sc["rows"] == []
+    assert sc["dry_run"] is True
+    assert "rows" not in sc and "row_count" not in sc
     assert sc["parameters"]["limit"] == 3
     assert "?" in sc["rendered_sql"]
 

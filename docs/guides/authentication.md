@@ -434,7 +434,7 @@ cd .. && mkdir -p shop-agents/sqls && cp -r shop/data shop-agents/ && cd shop-ag
 
 Start it with REST authentication only. alice is the one user:
 
-<!-- flapi: config group=leak allow=MCP_UNAUTHENTICATED_TOOLS -->
+<!-- flapi: config group=leak allow=MCP_UNAUTHENTICATED_TOOLS,MCP_TOOL_BYPASSES_REST_AUTH -->
 ```yaml
 # flapi.yaml (first version)
 project-name: shop-agents
@@ -479,8 +479,9 @@ FROM read_parquet('{{{ conn.path }}}')
 <!-- flapi: check group=leak GET /customer-count user=alice:wonderland -> 200 contains ""customers":1500" -->
 <!-- flapi: check-mcp group=leak customer_count -> ok contains ""customers":1500" -->
 
-Startup warns `MCP_UNAUTHENTICATED_TOOLS`, and it means it. REST refuses an
-anonymous caller, the tool does not:
+Startup warns `MCP_UNAUTHENTICATED_TOOLS`, and `MCP_TOOL_BYPASSES_REST_AUTH` naming
+`endpoint GET /customer-count`, and it means it. REST refuses an anonymous caller, the
+tool does not:
 
 ```bash
 curl -s http://localhost:8080/customer-count
@@ -533,7 +534,8 @@ mcp:
 ```
 
 With `mcp.auth` enabled, **a tool without `allowed-roles` is refused to
-everyone** (`403`, "has no allowed-roles configured"). Give the tool its roles:
+everyone** (`403`, "Tool 'x' is not available to your roles.", and the startup warning
+`MCP_TOOL_NO_ALLOWED_ROLES` names the file). Give the tool its roles:
 
 <!-- flapi: endpoint group=agents file=customer-count.yaml -->
 ```yaml
@@ -608,6 +610,16 @@ curl -s -u bob:builder http://localhost:8080/segment-balances
 The same endpoint answers REST too, through the top-level `auth:`: bob gets the
 same two segments from `GET /segment-balances`. Remove `url-path` if the tool
 should be the only way in.
+
+Two startup warnings catch an endpoint file that reads as protected and is not:
+`ENDPOINT_AUTH_KEY_IGNORED` (a key such as `authentication:` or `Auth:` that flAPI does not
+read, and no `auth:` block: rename it to `auth:`) and `ENDPOINT_DUPLICATE_AUTH_KEY` (`auth`
+twice after include expansion: only the first counts). `--strict` turns these, and every other
+security warning, into a failure.
+
+The `401` names the scheme `mcp.auth.type` accepts: `WWW-Authenticate: Basic realm="flAPI"`
+for `basic`, `Bearer` for `bearer` and `oidc`. A `403` under `basic` has no
+`WWW-Authenticate`; under `bearer` it says `error="insufficient_scope"`.
 
 `mcp.auth.methods` relaxes single methods, e.g. `tools/list: {required: false}`;
 every other method requires authentication, except `server/discover`, which is

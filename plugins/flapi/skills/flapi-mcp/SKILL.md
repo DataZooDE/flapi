@@ -136,10 +136,10 @@ become `string` with `format`. A string validator's `regex` becomes `pattern`, a
 | `name` | required | Tool name in `tools/list` / `tools/call` |
 | `description` | required | What the agent reads. Scanned (below) |
 | `result-mime-type` | `application/json` | MIME type of the result |
-| `allowed-roles` | unset | Roles that may call it. **Required on every tool once `mcp.auth.enabled: true`**: a tool without it is denied. `[]` denies everyone. Ignored while MCP auth is off |
+| `allowed-roles` | unset | Roles that may call it. **Required on every tool once `mcp.auth.enabled: true`**: a tool without it is denied (startup warns `MCP_TOOL_NO_ALLOWED_ROLES`). `[]` denies everyone. Ignored while MCP auth is off; then a tool on a REST-protected endpoint warns `MCP_TOOL_BYPASSES_REST_AUTH` |
 | `response.max-rows` | unset | Cap rows returned to the agent |
-| `response.redact-columns` | `[]` | Replace these columns' values with `"<redacted>"` (the key stays) |
-| `response.sample` | `false` | Return only `{sampled, row_count, columns}`, never rows |
+| `response.redact-columns` | `[]` | Replace these columns' values with `"<redacted>"` (the key stays; columns stay in SELECT order) |
+| `response.sample` | `false` | Return only `{sampled, row_count, columns}`, never rows (also as `structuredContent`, no `rows` key) |
 | `rate-limit` | off | `{enabled, max, interval}`: per tool, per principal (anonymous callers share one bucket) |
 | `tracing.capture` | global | `off`/`metadata`/`payload` for this tool's spans |
 | `async` | `false` | Run as an MCP task: return a task id at once (modern clients only) |
@@ -322,11 +322,12 @@ Real `tools/call` result (trimmed):
 - **Dry-run:** add `"_dryRun": true` to `arguments`. Validators, roles and rate limits still
   run; the SQL does not. The result text is `{"dry_run":true,"tool_name":...,"rendered_sql":...,"bindings":[...],"parameters":{...}}`:
   typed params are `?` in `rendered_sql` with their values in `bindings`, and `parameters`
-  are typed (`3`, not `"3"`). `structuredContent.rows` is `[]`.
+  are typed (`3`, not `"3"`). `structuredContent` is that same object: no `rows`, no `row_count`.
   The SQL is withheld if it would expose a secret too short to redact.
 - Other methods: `resources/list`, `resources/read` (`{"uri":"flapi://segment_summary"}`),
   `prompts/list`, `prompts/get` (`{"name":..,"arguments":{..}}`), `ping`,
-  `logging/setLevel`, `completion/complete`.
+  `logging/setLevel`, `completion/complete` (enum values matching the prefix, at most 100;
+  `total` counts the matches, `hasMore` when more matched).
 
 Async tasks (modern 2026-07-28 era, headers, `tasks/get`, `tasks/cancel`), error codes and a
 Python client: [references/jsonrpc.md](references/jsonrpc.md).

@@ -328,6 +328,13 @@ The auditor names REST endpoints with their method (`endpoint GET /orders`) and 
 `AUTH_EMPTY_JWT_SECRET` for the global block, an endpoint and `mcp.auth`: authentication fails closed and
 every token is refused.
 
+For MCP it also reports `MCP_TOOL_NO_ALLOWED_ROLES` (`mcp.auth` on, a tool, resource or prompt without
+`allowed-roles`: `MCPAuthorizationPolicy` denies it to everyone) and `MCP_TOOL_BYPASSES_REST_AUTH`
+(`mcp.auth` off, an `mcp-tool` on an endpoint whose REST route requires authentication). An endpoint
+without an `auth:` block whose file has an unread `auth*` key (`EndpointConfig::unknown_keys`) is
+reported as `ENDPOINT_AUTH_KEY_IGNORED`, and one whose file had `auth` more than once after include
+expansion (`EndpointConfig::duplicate_keys`; the first wins silently) as `ENDPOINT_DUPLICATE_AUTH_KEY`.
+
 ## Input Validation
 
 ### RequestValidator (src/request_validator.cpp)

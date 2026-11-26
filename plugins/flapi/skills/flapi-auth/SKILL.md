@@ -458,7 +458,9 @@ top-level `https:` block is ignored with a warning.
 ## Startup security warnings
 
 Printed to stderr as `SECURITY WARNINGS (n)` on every start and on
-`--validate-config`; they never stop startup. (An unknown `auth.type` is not a warning but a
+`--validate-config`; they stop nothing unless `--strict` is passed (then
+`--validate-config` exits 1, the server refuses to start, and a later config-service create or
+`reload-file` with a finding is refused with 400). (An unknown `auth.type` is not a warning but a
 load error, `AUTH_UNKNOWN_TYPE`, see above.)
 
 | Code | Meaning |
@@ -469,6 +471,11 @@ load error, `AUTH_UNKNOWN_TYPE`, see above.)
 | `AUTH_EMPTY_JWT_SECRET` | bearer endpoint, global block or `mcp.auth` with empty `jwt-secret`: fails closed, every token is refused |
 | `CORS_WILDCARD_WITH_AUTH` | `cors.allow-origins` empty or `"*"` while any auth is enabled |
 | `MCP_UNAUTHENTICATED_TOOLS` | `mcp.enabled` with tools and `mcp.auth.enabled: false` |
+| `MCP_TOOL_NO_ALLOWED_ROLES` | `mcp.auth` on and a tool, resource or prompt with no or an empty `allowed-roles`: everyone gets 403 |
+| `MCP_DESCRIPTION_*` | the description scanner's findings on a tool description (prompt injection, control characters, too long) |
+| `MCP_TOOL_BYPASSES_REST_AUTH` | `mcp.auth` off and an `mcp-tool` on an endpoint whose REST route requires auth (names the endpoint) |
+| `ENDPOINT_DUPLICATE_AUTH_KEY` | an endpoint file has `auth` more than once (e.g. an `{{include:... as auth}}` beside a block): only the first is used |
+| `ENDPOINT_AUTH_KEY_IGNORED` | an unread top-level `auth*` key (`authentication:`, `Auth:`) on an endpoint without an `auth:` block |
 | `CREDENTIAL_TOO_SHORT_TO_REDACT` | a credential connection property under 4 chars: error detail is withheld |
 
 ## Canonical auth setup

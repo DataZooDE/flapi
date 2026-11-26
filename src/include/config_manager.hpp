@@ -284,17 +284,19 @@ struct EndpointConfig {
     // Path to the YAML configuration file for this endpoint (for reloading)
     std::string config_file_path;
 
-    // Top-level keys of the endpoint YAML (after includes) that nothing reads,
-    // in file order (#282). Filled by EndpointConfigParser only - empty for an
-    // endpoint built from JSON. Startup and --validate-config warn about each;
-    // the security auditor can use it to flag an ignored `auth*` key.
+    // Top-level keys of the endpoint YAML (after includes) that nothing reads
+    // (a typo, `authentication:` for `auth:`), in file order (#282). Filled by
+    // EndpointConfigParser only - empty for an endpoint built from JSON.
+    // Startup and --validate-config warn about each; SecurityAuditor reports
+    // an `auth*` one when the endpoint has no `auth:` block
+    // (ENDPOINT_AUTH_KEY_IGNORED).
     std::vector<std::string> unknown_keys;
 
     // Top-level keys that occur more than once after includes, once each, in
     // file order. Only the FIRST occurrence is read, so `auth: {enabled:
     // false}` before `{{include:auth-prod as auth from ...}}` leaves the
-    // endpoint public. Warned about (a duplicate `auth` as SECURITY); the
-    // security auditor can use it for --strict.
+    // endpoint public. Warned about (a duplicate `auth` as SECURITY);
+    // SecurityAuditor reports `auth` (ENDPOINT_DUPLICATE_AUTH_KEY).
     std::vector<std::string> duplicate_keys;
 
     // MCP-specific metadata (optional)
@@ -910,6 +912,16 @@ public:
     /// digests and never appear in the message.
     ///
     /// `replacing`: the endpoint an update replaces, which is not compared.
+    /// `flapi --strict`, once the startup audit passed: endpoints that arrive
+    /// LATER (config-service create/update, reload, reload-file) are audited
+    /// too, and refused when they carry a security warning.
+    void setStrictSecurity(bool strict) { strict_security_ = strict; }
+    bool isStrictSecurity() const { return strict_security_; }
+    /// "" or why `candidate` is refused under --strict: the SecurityAuditor
+    /// codes and messages of its endpoint-level findings. Always "" without
+    /// --strict.
+    std::string StrictSecurityProblem(const EndpointConfig& candidate) const;
+
     std::string DuplicateEndpointProblem(const EndpointConfig& candidate,
                                          const EndpointConfig* replacing = nullptr) const;
     /// Logs every allowed overlap of `candidate` with a loaded endpoint: a
@@ -1039,6 +1051,8 @@ protected:
     std::unordered_map<std::string, ConnectionConfig> connections;
     RateLimitConfig rate_limit_config;
     bool auth_enabled;
+    // Set once by main() before the server starts serving; read-only after.
+    bool strict_security_ = false;
     AuthConfig global_auth_config;
     // Copy-on-write; never mutated in place once published. Guarded by
     // endpoints_mutex for writers; readers take the shared_ptr under the same

@@ -38,8 +38,11 @@ curl -s $B -H 'Content-Type: application/json' \
 ```
 
 - `status` goes `working` -> `completed` (result under `result`), `failed` (`error`) or
-  `cancelled`. `tasks/cancel {taskId}` cancels a queued task; a running SQL statement still
-  runs to completion (a write may commit).
+  `cancelled`. A tool that fails (SQL error, bad argument, rate limit) ends `failed`:
+  `error` is the message with the submitting call's `request_id`, and `result` keeps the
+  `isError: true` tool result. `tasks/cancel {taskId}` answers `{"status":"cancelling"}`: a queued task is
+  cancelled at once, a running one has its DuckDB query interrupted, and the task ends
+  `cancelled`. A remote source (Postgres, BigQuery) may still finish its own side of the work.
 - A task id is bound to the principal that created it.
 - Tasks are stored in the `flapi_mcp_tasks` table of the main DuckDB database. They survive
   a restart only when `duckdb.db_path` is a file. A task that was running during a crash
@@ -56,9 +59,9 @@ curl -s $B -H 'Content-Type: application/json' \
 | Unknown tool | 200 | error `-32602` `Tool not found: x` |
 | Unknown method | 200 | `-32601` |
 | Bad JSON | 400 | `-32700` `Parse error: Invalid JSON` |
-| MCP auth on, no credentials | 401 + `WWW-Authenticate` | `-32000` `Authentication required for method: tools/call` |
+| MCP auth on, no credentials | 401 + `WWW-Authenticate` (`Basic realm="flAPI"` under `type: basic`, else `Bearer`) | `-32000` `Authentication required for method: tools/call` |
 | MCP auth on, credentials refused (bad/expired JWT, wrong password) | 401 + `WWW-Authenticate` | `-32000` `The credentials sent were not accepted.` |
-| Caller lacks the tool's `allowed-roles` | 403 (`insufficient_scope`) | `-32000` `Permission denied: ...` |
+| Caller lacks the tool's `allowed-roles` | 403 (`Bearer error="insufficient_scope"`; no `WWW-Authenticate` under `mcp.auth.type: basic`) | `-32000` `Permission denied: ...` |
 | `flapi_*` tool without the config-service token (`X-Config-Token` or `Authorization: Bearer`) | 200 | `-32603` `Tool execution failed: Authentication required for tool: flapi_x` |
 | `flapi_*` tool with a wrong token | 200 | `-32603` `Tool execution failed: Authentication validation failed: Invalid authentication token` |
 | Per-tool rate limit exceeded | 200 | JSON-RPC error, like the RBAC denial |

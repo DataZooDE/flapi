@@ -580,8 +580,7 @@ curl -s -X POST http://localhost:8080/mcp/jsonrpc -H 'Content-Type: application/
 
 The result carries `"dry_run": true`, `rendered_sql` (with `?` placeholders)
 and `bindings`, the same shape as `templates expand`. `_dryRun` is removed from
-the arguments before validation. The result also has `"rows": []`: nothing ran,
-so that is not the query's answer.
+the arguments before validation. The result has no `rows`: nothing ran.
 
 ## 9. Write data: POST, PUT, PATCH, DELETE
 

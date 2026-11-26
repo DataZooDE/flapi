@@ -299,7 +299,8 @@ clients that want JSON get `structuredContent`:
 
 After the first successful call of a tool, `tools/list` also advertises an `outputSchema`
 for it: `{rows: array of objects, row_count: integer}`. The column types come from the
-first row (every number is typed as `number`). A dry run never sets the schema, and a
+first row (every number is typed as `number`; a column that is NULL there gets the empty
+schema `{}`, which accepts any value). A dry run or a `sample: true` tool never sets the schema, and a
 config reload clears it. A write tool returns the same body as the REST write
 (`rows_affected`, plus `data` with the `RETURNING` rows).
 
@@ -347,7 +348,8 @@ context and, on a warehouse, money.
   [cached endpoint](./caching.md) reads the local cache table, so an agent that calls it
   fifty times in a conversation does not run fifty warehouse queries.
 - **Use `sample: true` for "how much is there?"** It returns
-  `{"columns": [...], "row_count": N, "sampled": true}` and no rows.
+  `{"sampled": true, "row_count": N, "columns": [...]}` and no rows, as the text block and
+  as `structuredContent` (which has no `rows` key then).
 - **Put a per-tool rate limit on every tool** ([below](#per-tool-rate-limits)). It is a
   cost guard against an agent stuck in a loop.
 
@@ -382,7 +384,8 @@ mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"customer_co
 # ... "c_phone":"<redacted>" ... "row_count":20
 ```
 
-`redact-columns` keeps the column, so the agent can see that it exists. The database still
+`redact-columns` keeps the column, so the agent can see that it exists. A shaped result keeps
+the columns in SELECT order and the numbers as the database returned them. The database still
 computes the full result before `max-rows` cuts it, so put a filter in front of a big
 query.
 
@@ -517,7 +520,7 @@ mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_custom
 ```
 
 The result holds `dry_run: true`, `tool_name`, `rendered_sql`, `bindings` and the typed
-`parameters`; `structuredContent` also holds `rows: []`. A bare `{{ params.x }}` outside a
+`parameters`; `structuredContent` is the same object, with no `rows` (nothing ran). A bare `{{ params.x }}` outside a
 section is a prepared-statement parameter, so it appears as `?` with its value in
 `bindings`. Values inside a `{{#...}}` section, like `id` here, are rendered into the SQL.
 Role checks, rate limits and validators all still apply, and credentials that the
@@ -547,7 +550,7 @@ curl -L -o data/customers.parquet \
 ```
 
 `flapi.yaml`:
-<!-- flapi: config group=secure -->
+<!-- flapi: config group=secure allow=MCP_TOOL_NO_ALLOWED_ROLES -->
 ```yaml
 project-name: mcp-secured
 template:
@@ -604,7 +607,7 @@ connection: [customers]
 <!-- flapi: check-mcp my_balances {"limit": 1} user=analyst:s3cret -> ok -->
 <!-- flapi: check-mcp my_balances {"limit": 1} user=analyst:s3cret -> ok -->
 <!-- flapi: check-mcp my_balances {"limit": 1} user=analyst:s3cret -> error contains "Rate limit exceeded" -->
-<!-- flapi: check-mcp no_roles {} user=analyst:s3cret -> 403 contains "has no allowed-roles configured" -->
+<!-- flapi: check-mcp no_roles {} user=analyst:s3cret -> 403 contains "is not available to your roles" -->
 
 `sqls/balances.sql`:
 <!-- flapi: template group=secure file=balances.sql -->
@@ -637,9 +640,11 @@ curl -s $URL -H 'Content-Type: application/json' -u analyst:s3cret -d '{"jsonrpc
 curl -s $URL -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'   # open
 ```
 
-- **401 or 403.** A missing or rejected credential gets HTTP 401 with JSON-RPC `-32000`. An
-  authenticated caller without one of the tool's `allowed-roles` gets HTTP 403
-  `Permission denied: ...`. A tool with no `allowed-roles` refuses every call while
+- **401 or 403.** A missing or rejected credential gets HTTP 401 with JSON-RPC `-32000` and
+  a `WWW-Authenticate` naming the scheme (`Basic realm="flAPI"` under `mcp.auth.type: basic`,
+  `Bearer` otherwise). An authenticated caller without one of the tool's `allowed-roles` gets
+  HTTP 403 `Permission denied: ...` (with `Bearer error="insufficient_scope"`, or no challenge
+  under basic). A tool with no `allowed-roles` refuses every call while
   `mcp.auth` is on, and so do an `mcp-resource` or `mcp-prompt` without one. An empty list
   (`allowed-roles: []`) lets no one in. Without `mcp.auth`, flAPI does not check roles.
 - **Per-method requirements.** `mcp.auth.methods.<method>.required: false` opens one
@@ -695,6 +700,32 @@ Make your CI stop instead:
 ```bash
 flapi -c flapi.yaml --validate-config 2>&1 | grep MCP_UNAUTHENTICATED_TOOLS && exit 1
 ```
+
+Or fail on every security warning: `flapi -c flapi.yaml --validate-config --strict` exits
+`1` when there is any, and `flapi --strict` refuses to start the server.
+
+Two more warnings are about MCP:
+
+- `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is on and a tool, resource or prompt has no
+  `allowed-roles`, so every caller gets a 403 (the `no_roles` tool above).
+- `MCP_TOOL_BYPASSES_REST_AUTH`: `mcp.auth` is off and an endpoint with an `auth:` block
+  (or the top-level `auth:`) is also an `mcp-tool`. An endpoint's `auth:` block does not
+  apply to MCP, so its data is open through `/mcp/jsonrpc`. The warning names the file.
+- `MCP_DESCRIPTION_PROMPT_INJECTION`, `MCP_DESCRIPTION_CONTROL_CHARACTER`,
+  `MCP_DESCRIPTION_TOO_LONG`: the description scanner's findings on a tool description.
+
+Two warnings are about the endpoint file itself, and matter for tools too:
+
+- `ENDPOINT_AUTH_KEY_IGNORED`: the file has a key flAPI does not read that starts with `auth`
+  (`authentication:`, `Auth:`) and no `auth:` block. The endpoint is open (or uses the
+  top-level `auth:`) although the file reads as protected. Rename the key to `auth:`.
+- `ENDPOINT_DUPLICATE_AUTH_KEY`: the file has `auth` more than once after include expansion
+  (two blocks, or an `{{include:... as auth}}` beside one). Only the first counts, so the
+  block you meant can be the one ignored. Keep one.
+
+`flapi --validate-config --strict` fails on any of these, and on every other security
+warning; `flapi --strict` refuses to start, and refuses (400) an endpoint created or
+reloaded later that has one. See [CLI_REFERENCE § --strict](../CLI_REFERENCE.md#strict-security---strict).
 
 ## Threat model and safe defaults
 
@@ -765,8 +796,9 @@ mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"segment_tot
 A modern client gets `"resultType": "task"` and `{"task": {"taskId": "task_...", "status":
 "working", "pollIntervalMs": 1000, "ttlMs": 3600000}}`. It polls `tasks/get` with that
 `taskId` until `status` is `completed` (the tool result, same shape as a synchronous call,
-is under `result`; a failed query still completes, with `isError` in the result), `failed`
-or `cancelled`. `tasks/cancel` interrupts the query, and the task ends `cancelled`. A
+is under `result`), `failed` or `cancelled`. A failed query ends the task `failed`:
+`error` has the message (with the request id of the `tools/call`), and `result` still
+holds the `isError` tool result. `tasks/cancel` interrupts the query, and the task ends `cancelled`. A
 task ID belongs to the principal who created it. The curl commands are in
 [The 2026-07-28 protocol](#the-2026-07-28-protocol).
 
@@ -841,7 +873,7 @@ never gets a session. On the modern path `ping` and `logging/setLevel` are gone
 - **Relying on REST `auth:` to protect a tool.** It does not. Turn on `mcp.auth` and give
   every tool `allowed-roles`.
 - **Turning on `mcp.auth` and forgetting `allowed-roles`.** Every call then answers 403
-  `has no allowed-roles configured`.
+  `Tool 'x' is not available to your roles.`; startup warns `MCP_TOOL_NO_ALLOWED_ROLES`.
 - **Assuming a tool is paginated.** A tool returns every row. Set `max-rows` and tell the
   agent about `limit` and `offset`.
 - **`LIMIT {{ params.limit }}` in the template.** `limit` belongs to flAPI's pagination.
