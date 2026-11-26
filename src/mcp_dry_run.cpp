@@ -1,6 +1,7 @@
 #include "mcp_dry_run.hpp"
 
 #include "redaction.hpp"
+#include "auth_params.hpp"
 
 #include <algorithm>
 
@@ -77,6 +78,11 @@ std::string MCPDryRun::formatResult(const std::string& tool_name,
 
     crow::json::wvalue params_obj = crow::json::wvalue::object();
     for (const auto& [k, v] : parameters) {
+        // The `__auth_*` keys are the identity the server injected for the
+        // template's `auth.*`, not the caller's arguments: never echoed.
+        if (isReservedAuthKey(k)) {
+            continue;
+        }
         // A request field's configured `default:` is copied into params, so a
         // credential-valued default was handed straight back to an
         // unauthenticated _dryRun caller in this object - regardless of
@@ -188,6 +194,9 @@ std::string MCPDryRun::formatResult(const std::string& tool_name,
 
     crow::json::wvalue params_obj = crow::json::wvalue::object();
     for (const auto& [k, v] : parameters) {
+        if (isReservedAuthKey(k)) {
+            continue;  // injected identity, not an argument (see above)
+        }
         if (isCredentialKey(k)) {
             params_obj[k] = std::string("<redacted>");
         } else {
