@@ -697,7 +697,7 @@ mcp:
 | `mcp-tool.allowed-roles` | array | - | Required JWT/OIDC roles to call this tool. Required when `mcp.auth.enabled: true` |
 | `mcp-tool.response.max-rows` | integer | - | Cap result-set size |
 | `mcp-tool.response.redact-columns` | array | - | Replace listed columns with the redaction sentinel before returning rows |
-| `mcp-tool.response.sample` | boolean | `false` | Return only summary metadata (`row_count`, `columns`, `sampled: true`), never row data |
+| `mcp-tool.response.sample` | boolean | `false` | Return only summary metadata (`sampled: true`, `row_count`, `columns`), never row data; `structuredContent` is that object, with no `rows` key |
 | `mcp-tool.rate-limit.enabled` | boolean | `true` when the block is present | Per-tool rate limit (keyed on authenticated principal, falling back to anonymous) |
 | `mcp-tool.rate-limit.max` | integer | `100` | Maximum tool invocations per interval |
 | `mcp-tool.rate-limit.interval` | integer | `60` | Window in seconds |

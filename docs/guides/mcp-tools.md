@@ -347,7 +347,8 @@ context and, on a warehouse, money.
   [cached endpoint](./caching.md) reads the local cache table, so an agent that calls it
   fifty times in a conversation does not run fifty warehouse queries.
 - **Use `sample: true` for "how much is there?"** It returns
-  `{"columns": [...], "row_count": N, "sampled": true}` and no rows.
+  `{"sampled": true, "row_count": N, "columns": [...]}` and no rows, as the text block and
+  as `structuredContent` (which has no `rows` key then).
 - **Put a per-tool rate limit on every tool** ([below](#per-tool-rate-limits)). It is a
   cost guard against an agent stuck in a loop.
 
