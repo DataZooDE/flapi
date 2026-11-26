@@ -61,6 +61,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   missing directory failed as a bare configuration error. The server now opens it at
   startup; validation reports a missing directory, or a `file` sink without `path`, as an
   error on `audit.path`.
+- **`flapi.result.bytes` is gone from the code (#279).** It was declared, and described
+  in a comment as the response size, but never set. The response size is
+  `http.response.body.size` on the request span.
 
 ### Upgrade notes
 
