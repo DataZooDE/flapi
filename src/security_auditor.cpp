@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 
 #include "config_manager.hpp"
 #include "password_hasher.hpp"
@@ -58,6 +59,29 @@ std::string endpointLocation(const EndpointConfig& endpoint) {
         return "endpoint " + method + " " + endpoint.urlPath;
     }
     return "endpoint " + endpoint.getIdentifier();
+}
+
+// Where an endpoint-level warning points: the YAML file, relative to the
+// directory of flapi.yaml ("sqls/orders.yaml"), plus the REST route when there
+// is one ("sqls/orders.yaml (GET /orders)"). "endpoint MCP tool: x" did not say
+// which file to open.
+std::string fileLocation(const EndpointConfig& endpoint, const ConfigManager& config) {
+    if (endpoint.config_file_path.empty()) {
+        return endpointLocation(endpoint);
+    }
+    std::string file = endpoint.config_file_path;
+    const auto base = std::filesystem::path(config.getBasePath());
+    if (!base.empty()) {
+        const auto rel = std::filesystem::path(file).lexically_relative(base);
+        if (!rel.empty() && rel.generic_string().rfind("..", 0) != 0) {
+            file = rel.generic_string();
+        }
+    }
+    if (!endpoint.urlPath.empty()) {
+        const std::string method = endpoint.method.empty() ? "GET" : endpoint.method;
+        return file + " (" + method + " " + endpoint.urlPath + ")";
+    }
+    return file;
 }
 
 } // namespace
@@ -205,24 +229,32 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
         // MCPAuthorizationPolicy denies an entity with no allowed-roles to
         // EVERY caller once mcp.auth is on (deny by default). A tool that
         // reads as exposed then answers 403 to everyone; say it at startup.
-        const auto report = [&](const char* kind, const std::string& name, const EndpointConfig& endpoint) {
+        // An explicit empty list (`allowed-roles: []`) lets no one in either.
+        const auto report = [&](const char* kind, const std::string& name,
+                                const std::optional<std::vector<std::string>>& roles,
+                                const EndpointConfig& endpoint) {
+            if (roles.has_value() && !roles->empty()) {
+                return;
+            }
             warnings.push_back({
                 "MCP_TOOL_NO_ALLOWED_ROLES",
-                std::string("MCP ") + kind + " '" + name + "' has no allowed-roles while mcp.auth.enabled "
-                "is true, so every caller is refused (HTTP 403). Add allowed-roles listing the roles "
-                "that may use it.",
-                endpointLocation(endpoint)
+                std::string("MCP ") + kind + " '" + name + "' has " +
+                    (roles.has_value() ? "an empty allowed-roles list" : "no allowed-roles") +
+                    " while mcp.auth.enabled is true, so every caller is refused (HTTP 403). "
+                    "Add allowed-roles listing the roles that may use it, or disable mcp.auth "
+                    "to allow anonymous access.",
+                fileLocation(endpoint, config)
             });
         };
         for (const auto& endpoint : *config.getEndpoints()) {
-            if (endpoint.isMCPTool() && !endpoint.mcp_tool->allowed_roles.has_value()) {
-                report("tool", endpoint.mcp_tool->name, endpoint);
+            if (endpoint.isMCPTool()) {
+                report("tool", endpoint.mcp_tool->name, endpoint.mcp_tool->allowed_roles, endpoint);
             }
-            if (endpoint.isMCPResource() && !endpoint.mcp_resource->allowed_roles.has_value()) {
-                report("resource", endpoint.mcp_resource->name, endpoint);
+            if (endpoint.isMCPResource()) {
+                report("resource", endpoint.mcp_resource->name, endpoint.mcp_resource->allowed_roles, endpoint);
             }
-            if (endpoint.isMCPPrompt() && !endpoint.mcp_prompt->allowed_roles.has_value()) {
-                report("prompt", endpoint.mcp_prompt->name, endpoint);
+            if (endpoint.isMCPPrompt()) {
+                report("prompt", endpoint.mcp_prompt->name, endpoint.mcp_prompt->allowed_roles, endpoint);
             }
         }
     }
@@ -232,16 +264,21 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
         // does not, because MCP has its own (here: no) authentication.
         for (const auto& endpoint : *config.getEndpoints()) {
             if (endpoint.isMCPTool() && endpoint.auth.enabled) {
-                const std::string location = endpointLocation(endpoint);
+                const std::string block = endpoint.auth.inherited ? "the top-level auth: block"
+                                                                  : "its auth: block";
+                const std::string what = endpoint.urlPath.empty()
+                    ? "MCP tool '" + endpoint.mcp_tool->name + "' is declared with " + block +
+                          ", but an endpoint's auth: block does not apply to MCP"
+                    : "MCP tool '" + endpoint.mcp_tool->name + "' runs the SQL of " +
+                          (endpoint.method.empty() ? std::string("GET") : endpoint.method) + " " +
+                          endpoint.urlPath + ", which " + block + " protects over REST; that "
+                          "auth: block does not apply to MCP";
                 warnings.push_back({
                     "MCP_TOOL_BYPASSES_REST_AUTH",
-                    "MCP tool '" + endpoint.mcp_tool->name + "' runs the SQL of " + location +
-                    ", which requires authentication over REST" +
-                    (endpoint.auth.inherited ? " (the top-level auth block)" : "") +
-                    ", but mcp.auth.enabled is false: any caller reaching /mcp/jsonrpc gets the "
-                    "same data without credentials. Enable mcp.auth with allowed-roles, or remove "
-                    "the mcp-tool block.",
-                    location
+                    what + ", and mcp.auth.enabled is false: any caller reaching /mcp/jsonrpc "
+                    "gets the same data without credentials. Enable mcp.auth with allowed-roles, "
+                    "or remove the mcp-tool block.",
+                    fileLocation(endpoint, config)
                 });
             }
         }
@@ -261,7 +298,7 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
             "Endpoint file has the `auth` key more than once (after include expansion). Only the "
             "first one is used; the others, including any `{{include:... as auth}}` after it, are "
             "ignored. Keep exactly one `auth:` block.",
-            endpointLocation(endpoint)
+            fileLocation(endpoint, config)
         });
     }
 
@@ -291,7 +328,7 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
                              ? std::string("The endpoint uses the top-level auth block instead.")
                              : std::string("The endpoint requires no authentication.")) +
             " Rename the key to `auth:` if it was meant to protect this endpoint.",
-            endpointLocation(endpoint)
+            fileLocation(endpoint, config)
         });
     }
 
