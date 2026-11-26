@@ -27,6 +27,31 @@ pytestmark = pytest.mark.standalone_server
 # Decimal-only digits that cannot appear inside a hex trace/span id.
 SENTINEL = 99899
 
+
+def _leaks(blob: str) -> bool:
+    """True if SENTINEL appears in `blob`."""
+    return str(SENTINEL) in blob
+
+
+class TestSentinelCheck:
+    """The leak check must not fire on a number that merely contains the
+    sentinel's digits (#265): exports are full of 19-digit UnixNano
+    timestamps, durations and hex ids."""
+
+    TIMESTAMP = "1732612345998990000"
+
+    def test_a_plain_substring_check_would_flag_a_timestamp(self):
+        # Why the helper exists: this is the flake.
+        assert str(SENTINEL) in self.TIMESTAMP
+
+    def test_a_timestamp_containing_the_digits_is_not_a_leak(self):
+        assert not _leaks(f'"startTimeUnixNano":"{self.TIMESTAMP}"')
+        assert not _leaks("span_id 0a99899f")
+
+    def test_the_bound_value_itself_is_a_leak(self):
+        assert _leaks("id = 99899")
+        assert _leaks('"db.query.text":"WHERE id = 99899"')
+
 ENDPOINTS = {
     "typed.yaml": (
         "url-path: /typed\nmethod: GET\n"
@@ -129,13 +154,13 @@ class TestDbProfiling:
             assert r.status_code == 200, r.text
             server.wait_for_server_span(route="/filtered")
 
-            assert str(SENTINEL) not in server.raw_traces(), (
+            assert not _leaks(server.raw_traces()), (
                 "a bound parameter value reached the trace via profiling metrics"
             )
             # And not via the log either: DuckDB will happily print its query
             # tree to stderr when profiling is on, which bypasses the capture
             # tiers entirely.
-            assert str(SENTINEL) not in server.log(), (
+            assert not _leaks(server.log()), (
                 "a bound parameter value reached the server log"
             )
 
