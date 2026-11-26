@@ -50,7 +50,9 @@ TEST_CASE("MCPAuthorizationPolicy: auth enabled and no allowed-roles denies by d
 
     REQUIRE_FALSE(decision.allowed);
     REQUIRE_FALSE(decision.reason.empty());
-    REQUIRE(decision.reason.find("allowed-roles") != std::string::npos);
+    // The caller is told the tool is not for it; the configuration hint is
+    // the startup warning's (MCP_TOOL_NO_ALLOWED_ROLES).
+    REQUIRE(decision.reason == "Tool 'sensitive' is not available to your roles.");
 }
 
 TEST_CASE("MCPAuthorizationPolicy: auth enabled and matching role allows",
