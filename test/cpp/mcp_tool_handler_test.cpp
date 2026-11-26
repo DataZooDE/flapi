@@ -446,3 +446,50 @@ mcp-tool:
     REQUIRE(response.http_status == 503);
     REQUIRE(response.error.find("cache_warming") != std::string::npos);
 }
+
+// ---- #275: completion/complete counts ---------------------------------------
+
+TEST_CASE("completeEnumValues: total counts matches, values cap at 100, hasMore = total > emitted",
+          "[mcp][completion][issue275]") {
+    std::vector<std::string> allowed;
+    for (int i = 0; i < 120; ++i) {
+        allowed.push_back("item" + std::to_string(1000 + i));
+    }
+    for (int i = 0; i < 10; ++i) {
+        allowed.push_back("other" + std::to_string(i));
+    }
+
+    SECTION("a prefix that matches a few") {
+        const auto c = flapi::completeEnumValues(allowed, "other");
+        REQUIRE(c.values.size() == 10);
+        REQUIRE(c.total == 10);
+        REQUIRE_FALSE(c.has_more);
+    }
+    SECTION("more matches than the cap") {
+        const auto c = flapi::completeEnumValues(allowed, "item");
+        REQUIRE(c.values.size() == 100);
+        REQUIRE(c.values.front() == "item1000");
+        REQUIRE(c.values.back() == "item1099");
+        REQUIRE(c.total == 120);
+        REQUIRE(c.has_more);
+    }
+    SECTION("an empty prefix matches everything") {
+        const auto c = flapi::completeEnumValues(allowed, "");
+        REQUIRE(c.values.size() == 100);
+        REQUIRE(c.total == 130);
+        REQUIRE(c.has_more);
+    }
+    SECTION("no match") {
+        const auto c = flapi::completeEnumValues(allowed, "zzz");
+        REQUIRE(c.values.empty());
+        REQUIRE(c.total == 0);
+        REQUIRE_FALSE(c.has_more);
+    }
+    SECTION("exactly the cap") {
+        const std::vector<std::string> hundred(allowed.begin(), allowed.begin() + 100);
+        const auto c = flapi::completeEnumValues(hundred, "item");
+        REQUIRE(c.values.size() == 100);
+        REQUIRE(c.total == 100);
+        REQUIRE_FALSE(c.has_more);
+    }
+}

@@ -62,6 +62,15 @@ mcp-tool:
   name: tool_{n}
   description: tool {n}
 """)
+    # An enum argument with 130 values (#275): 120 "item...", 10 "other...".
+    enum_values = [f"item{i:03d}" for i in range(120)] + [f"other{i}" for i in range(10)]
+    with open(os.path.join(sqls, "pick.sql"), "w") as f:
+        f.write("SELECT 1 AS x\n")
+    with open(os.path.join(sqls, "pick.yaml"), "w") as f:
+        f.write("template-source: pick.sql\nconnection: [inmem]\n"
+                "request:\n  - field-name: choice\n    field-in: query\n"
+                "    validators:\n      - type: enum\n        allowedValues: [" + ", ".join(enum_values) + "]\n"
+                "mcp-tool:\n  name: pick\n  description: pick one\n")
     # A URI-templated resource.
     with open(os.path.join(sqls, "cust.sql"), "w") as f:
         f.write("SELECT {{{params.id}}} AS customer_id\n")
@@ -131,7 +140,7 @@ def _rpc(base: str, method: str, params: dict, id_="x") -> dict:
 class TestPaginationAndTemplates:
     def test_unpaged_returns_all_tools_without_cursor(self, server_unpaged):
         r = _rpc(server_unpaged, "tools/list", {})["result"]
-        assert len(r["tools"]) == 3
+        assert len(r["tools"]) == 4
         assert "nextCursor" not in r
 
     def test_paged_walks_all_tools_via_cursor(self, server_paged):
@@ -145,7 +154,7 @@ class TestPaginationAndTemplates:
             cursor = r.get("nextCursor")
             if not cursor:
                 break
-        assert sorted(seen) == ["tool_a", "tool_b", "tool_c"]
+        assert sorted(seen) == ["pick", "tool_a", "tool_b", "tool_c"]
 
     def test_stale_cursor_is_rejected(self, server_paged):
         import base64, json
@@ -188,3 +197,37 @@ class TestPaginationAndTemplates:
         text = r["contents"][0]["text"]
         assert "42" in text
         assert r["contents"][0]["uri"] == "flapi://customers/42"
+
+
+def _complete(base: str, prefix: str) -> dict:
+    body = _rpc(base, "completion/complete", {"ref": "pick", "argument": "choice", "value": prefix})
+    assert "result" in body, body
+    return body["result"]["completion"]
+
+
+@pytest.mark.standalone_server
+class TestCompletionCounts:
+    """#275: total counts the matches, values stop at 100, hasMore = total > emitted."""
+
+    def test_total_counts_only_matching_values(self, server_unpaged):
+        c = _complete(server_unpaged, "other")
+        assert c["values"] == [f"other{i}" for i in range(10)], c
+        assert c["total"] == 10, c
+        assert c["hasMore"] is False, c
+
+    def test_values_cap_at_100_and_total_counts_past_it(self, server_unpaged):
+        c = _complete(server_unpaged, "item")
+        assert len(c["values"]) == 100, c
+        assert c["values"][0] == "item000" and c["values"][-1] == "item099", c
+        assert c["total"] == 120, c
+        assert c["hasMore"] is True, c
+
+    def test_empty_prefix_matches_everything(self, server_unpaged):
+        c = _complete(server_unpaged, "")
+        assert len(c["values"]) == 100, c
+        assert c["total"] == 130, c
+        assert c["hasMore"] is True, c
+
+    def test_no_match(self, server_unpaged):
+        c = _complete(server_unpaged, "zzz")
+        assert c == {"values": [], "total": 0, "hasMore": False}, c
