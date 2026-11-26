@@ -1,10 +1,10 @@
 #include "include/mcp_auth_handler.hpp"
 #include "auth_middleware.hpp"
 #include "auth_params.hpp"
+#include "bearer_token_verifier.hpp"
 #include "oidc_provider_presets.hpp"
 #include <crow/logging.h>
 #include <crow/utility.h>
-#include <jwt-cpp/jwt.h>
 #include <sstream>
 
 namespace flapi {
@@ -150,45 +150,25 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticateBearer(
             return std::nullopt;
         }
 
-        // Decode and verify JWT token
-        auto decoded = jwt::decode(token);
+        BearerVerifierConfig verifier;
+        verifier.secret = mcp_auth.jwt_secret;
+        verifier.issuer = mcp_auth.jwt_issuer;
+        verifier.audiences = mcp_auth.jwt_audiences;
+        verifier.require_exp = mcp_auth.jwt_require_exp;
+        std::string reason;
+        auto identity = VerifyBearerToken(token, verifier, &reason);
+        if (!identity) {
+            CROW_LOG_DEBUG << "JWT verification failed: " << reason;
+            return std::nullopt;
+        }
 
-        // Verify JWT signature using configured secret and issuer
-        auto verifier = jwt::verify()
-            .allow_algorithm(jwt::algorithm::hs256{mcp_auth.jwt_secret})
-            .with_issuer(mcp_auth.jwt_issuer);
-
-        verifier.verify(decoded);
-
-        // Extract claims from verified token
         MCPSession::AuthContext ctx;
         ctx.authenticated = true;
-        ctx.username = decoded.get_payload_claim("sub").as_string();
-        // Optional: not every bearer token carries one, and auth.email simply
-        // stays empty when it does not.
-        try {
-            ctx.email = decoded.get_payload_claim("email").as_string();
-        } catch (const std::exception&) {
-            // no email claim
-        }
+        ctx.username = std::move(identity->username);
+        ctx.email = std::move(identity->email);
+        ctx.roles = std::move(identity->roles);
         ctx.auth_type = "bearer";
         ctx.auth_time = std::chrono::steady_clock::now();
-
-        // Extract roles if present in token
-        try {
-            auto roles_claim = decoded.get_payload_claim("roles");
-            if (roles_claim.get_type() != jwt::json::type::array) {
-                CROW_LOG_DEBUG << "JWT 'roles' claim is not an array, treating as empty";
-            } else {
-                auto roles = roles_claim.as_array();
-                for (const auto& role : roles) {
-                    ctx.roles.push_back(role.get<std::string>());
-                }
-            }
-        } catch (const std::exception& e) {
-            CROW_LOG_DEBUG << "No roles claim found in JWT: " << e.what();
-            // Empty roles is acceptable
-        }
 
         CROW_LOG_INFO << "MCP Bearer token authentication successful for user: " << ctx.username;
         return ctx;

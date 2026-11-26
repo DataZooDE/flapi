@@ -77,7 +77,8 @@ class BearerServer:
         with open(os.path.join(sqls, "tool.yaml"), "w") as f:
             f.write("url-path: /tool\nmethod: GET\ntemplate-source: who.sql\n"
                     "connection: [inmem]\nauth:\n  enabled: false\n"
-                    "mcp-tool:\n  name: whoami\n  description: Shows the caller.\n")
+                    "mcp-tool:\n  name: whoami\n  description: Shows the caller.\n"
+                    "  allowed-roles: [analyst]\n")
         with open(os.path.join(sqls, "who.sql"), "w") as f:
             f.write(WHO_SQL)
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
@@ -125,13 +126,13 @@ class BearerServer:
         headers = {"Authorization": f"Bearer {tok}"} if tok else {}
         return requests.get(f"{self.base_url}{path}", headers=headers, timeout=15)
 
-    def mcp(self, tok=None):
+    def mcp(self, tok=None, method="tools/call"):
         headers = {"Content-Type": "application/json"}
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
+        params = {"name": "whoami", "arguments": {}} if method == "tools/call" else {}
         return requests.post(f"{self.base_url}/mcp/jsonrpc", headers=headers, timeout=15,
-                             json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                                   "params": {"name": "whoami", "arguments": {}}})
+                             json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 
 
 @pytest.fixture(scope="module")
@@ -242,7 +243,11 @@ class TestClaims:
         assert _row(r)["roles"] == ""
 
     def test_roles_are_optional_on_mcp(self, server):
-        _mcp_ok(server.mcp(token(aud="mcp-api", drop=("roles",))))
+        # Authenticated without roles: tools/list answers, and the tool that
+        # needs `analyst` says 403 (not allowed), not 401 (not authenticated).
+        tok = token(aud="mcp-api", drop=("roles",))
+        _mcp_ok(server.mcp(tok, method="tools/list"))
+        assert server.mcp(tok).status_code == 403
 
     def test_the_principal_reaches_the_template(self, server):
         r = server.get("/open-issuer", token(sub="bob", email="bob@example.com",

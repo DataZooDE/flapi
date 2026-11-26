@@ -47,6 +47,7 @@ std::string endpointYaml(const std::string& path, const std::string& auth_block,
 
 std::string token(const std::set<std::string>& roles) {
     return "Bearer " + jwt::create()
+                           .set_expires_at(std::chrono::system_clock::now() + std::chrono::minutes(10))
                            .set_issuer("tests")
                            .set_payload_claim("sub", jwt::claim(std::string("ann")))
                            .set_payload_claim("roles", jwt::claim(roles))

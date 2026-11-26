@@ -10,6 +10,7 @@ add_executable(flapi_tests
     security_auditor_jwt_test.cpp
     oidc_token_expiry_test.cpp
     oidc_decode_jwt_test.cpp
+    bearer_token_verifier_test.cpp
     archive_io_test.cpp
     audit_logger_test.cpp
     bundle_locator_test.cpp

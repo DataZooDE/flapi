@@ -933,6 +933,43 @@ void ConfigManager::parseStorageConfig() {
 }
 
 // MCP configuration methods
+namespace {
+
+// `jwt-audience`: one string or a list. An empty entry is refused rather than
+// read as "no audience check": `jwt-audience: '{{env.API_AUD}}'` with the
+// variable unset would otherwise drop the check without a word.
+std::vector<std::string> ReadJwtAudience(const YAML::Node& auth_node, const std::string& location) {
+    const YAML::Node node = auth_node["jwt-audience"];
+    if (!node) {
+        return {};
+    }
+    std::vector<std::string> audiences;
+    if (node.IsScalar()) {
+        audiences.push_back(node.as<std::string>());
+    } else if (node.IsSequence()) {
+        for (const auto& entry : node) {
+            if (!entry.IsScalar()) {
+                throw ConfigurationError(location + ".jwt-audience must be a string or a list of strings",
+                                         location + ".jwt-audience");
+            }
+            audiences.push_back(entry.as<std::string>());
+        }
+    } else {
+        throw ConfigurationError(location + ".jwt-audience must be a string or a list of strings",
+                                 location + ".jwt-audience");
+    }
+    for (const auto& audience : audiences) {
+        if (audience.empty()) {
+            throw ConfigurationError(location + ".jwt-audience has an empty entry. If it comes from "
+                                     "{{env.NAME}}, that variable is unset or empty.",
+                                     location + ".jwt-audience");
+        }
+    }
+    return audiences;
+}
+
+}  // namespace
+
 void ConfigManager::parseMCPConfig() {
     CROW_LOG_INFO << "Parsing MCP configuration";
     mcp_config = MCPConfig{};  // Initialize with defaults
@@ -1046,7 +1083,12 @@ void ConfigManager::parseMCPConfig() {
                 CROW_LOG_WARNING << "MCP auth enabled with bearer type but jwt-secret not configured";
             }
 
-            mcp_config.auth.jwt_issuer = safeGet<std::string>(auth, "jwt-issuer", "mcp.auth.jwt-issuer", "flapi");
+            // No default: an unset issuer is not checked, as on REST (the
+            // security auditor says so at startup).
+            mcp_config.auth.jwt_issuer = safeGet<std::string>(auth, "jwt-issuer", "mcp.auth.jwt-issuer", "");
+            mcp_config.auth.jwt_audiences = ReadJwtAudience(auth, "mcp.auth");
+            mcp_config.auth.jwt_require_exp =
+                safeGet<bool>(auth, "jwt-require-exp", "mcp.auth.jwt-require-exp", true);
             CROW_LOG_DEBUG << "MCP JWT Issuer: " << mcp_config.auth.jwt_issuer;
         }
 
@@ -1535,8 +1577,8 @@ namespace {
 // endpoint OPEN - and, under a global auth block, counted it as an opt-out.
 // Only an explicit `enabled: false` turns authentication off.
 bool DeclaresAuthentication(const YAML::Node& auth_node) {
-    for (const char* key : {"type", "roles", "users", "jwt-secret", "jwt-issuer", "oidc",
-                            "from-aws-secretmanager"}) {
+    for (const char* key : {"type", "roles", "users", "jwt-secret", "jwt-issuer", "jwt-audience",
+                            "jwt-require-exp", "oidc", "from-aws-secretmanager"}) {
         if (auth_node[key]) {
             return true;
         }
@@ -1548,8 +1590,8 @@ bool DeclaresAuthentication(const YAML::Node& auth_node) {
 // any of them (`roles:` only, or just `enabled: true`) has nothing to check a
 // request against on its own.
 bool DeclaresCredentials(const YAML::Node& auth_node) {
-    for (const char* key : {"type", "users", "jwt-secret", "jwt-issuer", "oidc",
-                            "from-aws-secretmanager"}) {
+    for (const char* key : {"type", "users", "jwt-secret", "jwt-issuer", "jwt-audience",
+                            "jwt-require-exp", "oidc", "from-aws-secretmanager"}) {
         if (auth_node[key]) {
             return true;
         }
@@ -1591,6 +1633,8 @@ void ConfigManager::inheritGlobalCredentials(AuthConfig& auth, bool declares_cre
     auth.users = global_auth_config.users;
     auth.jwt_secret = global_auth_config.jwt_secret;
     auth.jwt_issuer = global_auth_config.jwt_issuer;
+    auth.jwt_audiences = global_auth_config.jwt_audiences;
+    auth.jwt_require_exp = global_auth_config.jwt_require_exp;
     auth.oidc = global_auth_config.oidc;
     auth.from_aws_secretmanager = global_auth_config.from_aws_secretmanager;
     auth.roles = declares_roles ? own_roles : global_auth_config.roles;
@@ -1608,11 +1652,12 @@ void ConfigManager::warnIgnoredAuthKeys(const YAML::Node& auth_node, const std::
     // What each scheme reads. Anything else in this list is set but unread.
     std::vector<const char*> unread;
     if (type == "basic") {
-        unread = {"jwt-secret", "jwt-issuer", "oidc"};
+        unread = {"jwt-secret", "jwt-issuer", "jwt-audience", "jwt-require-exp", "oidc"};
     } else if (type == "bearer") {
         unread = {"users", "oidc", "from-aws-secretmanager"};
     } else if (type == "oidc") {
-        unread = {"users", "jwt-secret", "jwt-issuer", "from-aws-secretmanager"};
+        unread = {"users", "jwt-secret", "jwt-issuer", "jwt-audience", "jwt-require-exp",
+                  "from-aws-secretmanager"};
     } else {
         return;
     }
@@ -1672,6 +1717,8 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
         if (auth_node["jwt-issuer"]) {
             endpoint.auth.jwt_issuer = safeGet<std::string>(auth_node, "jwt-issuer", "auth.jwt-issuer");
         }
+        endpoint.auth.jwt_audiences = ReadJwtAudience(auth_node, "auth");
+        endpoint.auth.jwt_require_exp = safeGet<bool>(auth_node, "jwt-require-exp", "auth.jwt-require-exp", true);
         
         if (auth_node["from-aws-secretmanager"]) {
             endpoint.auth.from_aws_secretmanager = parseAwsSecretManagerNode(auth_node["from-aws-secretmanager"]);
@@ -2062,6 +2109,9 @@ void ConfigManager::parseAuthConfig() {
             global_auth_config.jwt_issuer = auth_node["jwt-issuer"].as<std::string>();
             CROW_LOG_DEBUG << "JWT issuer: " << global_auth_config.jwt_issuer;
         }
+        global_auth_config.jwt_audiences = ReadJwtAudience(auth_node, "auth");
+        global_auth_config.jwt_require_exp =
+            safeGet<bool>(auth_node, "jwt-require-exp", "auth.jwt-require-exp", true);
 
         if (auth_node["users"]) {
             for (const auto& user : auth_node["users"]) {
@@ -3405,6 +3455,8 @@ struct AuthSignature {
     std::vector<UserSig> users;       // sorted; compared by UsersEquivalent
     std::string jwt_secret_digest;
     std::string jwt_issuer;
+    std::string jwt_audience;         // sorted, joined
+    bool jwt_require_exp = true;
     std::string oidc;                 // issuer/audience/client fields, joined
     std::string aws_secret;           // from-aws-secretmanager source, joined
 
@@ -3431,6 +3483,8 @@ struct AuthSignature {
         check(UsersEquivalent(users, other.users), "users");
         check(jwt_secret_digest == other.jwt_secret_digest, "jwt-secret");
         check(jwt_issuer == other.jwt_issuer, "jwt-issuer");
+        check(jwt_audience == other.jwt_audience, "jwt-audience");
+        check(jwt_require_exp == other.jwt_require_exp, "jwt-require-exp");
         check(oidc == other.oidc, "oidc");
         check(aws_secret == other.aws_secret, "from-aws-secretmanager");
         return out;
@@ -3476,6 +3530,8 @@ AuthSignature authSignature(const EndpointConfig& ep) {
     std::sort(sig.users.begin(), sig.users.end());
     sig.jwt_secret_digest = digestOf(auth.jwt_secret);
     sig.jwt_issuer = auth.jwt_issuer;
+    sig.jwt_audience = joined(sortedUnique(auth.jwt_audiences));
+    sig.jwt_require_exp = auth.jwt_require_exp;
     if (auth.oidc) {
         // The provider as requests will see it: the preset applied, as
         // AuthMiddleware does per request, so `provider-type: keycloak` with a

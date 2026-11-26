@@ -413,6 +413,7 @@ add_library(flapi-lib STATIC
     src/config_tool_adapter.cpp
     src/mcp_content_types.cpp
     src/mcp_auth_handler.cpp
+    src/bearer_token_verifier.cpp
     src/oidc_discovery_client.cpp
     src/oidc_jwks_manager.cpp
     src/oidc_auth_handler.cpp

@@ -154,7 +154,9 @@ struct AuthConfig {
     std::vector<AuthUser> users;
     std::optional<AuthFromSecretManagerConfig> from_aws_secretmanager;
     std::string jwt_secret;
-    std::string jwt_issuer;
+    std::string jwt_issuer;                           // empty: `iss` is not checked (startup warns)
+    std::vector<std::string> jwt_audiences;           // `jwt-audience`; empty: `aud` is not checked
+    bool jwt_require_exp = true;                      // `jwt-require-exp`
     std::optional<OIDCConfig> oidc;                   // NEW: OIDC configuration
     // Roles the authenticated principal must hold (any one of them). Empty
     // means "any authenticated principal". Enforced by AuthMiddleware with 403.
@@ -522,7 +524,11 @@ struct MCPAuthConfig {
     std::string type = "bearer";  // "basic", "bearer", or "oidc"
     std::vector<AuthUser> users;  // For Basic auth - inline user list
     std::string jwt_secret;
-    std::string jwt_issuer = "flapi";
+    // Empty: `iss` is not checked (startup warns), as for REST. It used to
+    // default to "flapi" here and to "" (meaning `iss` must be "") on REST.
+    std::string jwt_issuer;
+    std::vector<std::string> jwt_audiences;           // `jwt-audience`; empty: `aud` is not checked
+    bool jwt_require_exp = true;                      // `jwt-require-exp`
     std::optional<OIDCConfig> oidc;  // NEW: OIDC configuration
     std::unordered_map<std::string, MCPMethodAuthConfig> methods;
 

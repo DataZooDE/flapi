@@ -24,6 +24,7 @@
 
 #include "auth_middleware.hpp"
 #include "auth_params.hpp"
+#include "bearer_token_verifier.hpp"
 #include "request_context_middleware.hpp"
 
 namespace {
@@ -912,29 +913,21 @@ bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const En
         return false;
     }
 
-    std::string token = auth_header.substr(7);
-
-    try {
-        auto decoded = jwt::decode(token);
-
-        auto verifier = jwt::verify()
-            .allow_algorithm(jwt::algorithm::hs256{endpoint.auth.jwt_secret})
-            .with_issuer(endpoint.auth.jwt_issuer);
-
-        verifier.verify(decoded);
-
-        // Extract claims
-        ctx.username = decoded.get_payload_claim("sub").as_string();
-        auto roles = decoded.get_payload_claim("roles").as_array();
-        for (auto& role : roles) {
-            ctx.roles.push_back(role.get<std::string>());
-        }
-
-        return true;
-    } catch (const std::exception& e) {
-        CROW_LOG_DEBUG << "JWT verification failed: " << e.what();
+    BearerVerifierConfig verifier;
+    verifier.secret = endpoint.auth.jwt_secret;
+    verifier.issuer = endpoint.auth.jwt_issuer;
+    verifier.audiences = endpoint.auth.jwt_audiences;
+    verifier.require_exp = endpoint.auth.jwt_require_exp;
+    std::string reason;
+    auto identity = VerifyBearerToken(auth_header.substr(7), verifier, &reason);
+    if (!identity) {
+        CROW_LOG_DEBUG << "JWT verification failed: " << reason;
         return false;
     }
+    ctx.username = std::move(identity->username);
+    ctx.email = std::move(identity->email);
+    ctx.roles = std::move(identity->roles);
+    return true;
 }
 
 std::shared_ptr<OIDCAuthHandler> AuthMiddleware::getOIDCHandler(const OIDCConfig& oidc_config) {

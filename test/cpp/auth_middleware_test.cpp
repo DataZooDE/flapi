@@ -311,6 +311,7 @@ TEST_CASE("AuthMiddleware JWT bearer authentication", "[auth]") {
         config_manager->addEndpoint(endpoint);
 
         auto token = jwt::create()
+            .set_expires_at(std::chrono::system_clock::now() + std::chrono::minutes(10))
             .set_issuer("test-issuer")
             .set_payload_claim("sub", jwt::claim(std::string("test_user")))
             .set_payload_claim("roles", jwt::claim(std::set<std::string>{"user", "admin"}))

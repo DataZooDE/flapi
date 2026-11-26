@@ -60,6 +60,13 @@ std::string endpointLocation(const EndpointConfig& endpoint) {
     return "endpoint " + endpoint.getIdentifier();
 }
 
+// Bearer auth with no jwt-issuer accepts a token from any issuer that holds
+// the key. That is a choice (one secret, one issuer), but it should be one.
+constexpr const char* kIssuerUnchecked =
+    "Bearer auth has no jwt-issuer, so a token's 'iss' claim is not checked: any "
+    "token signed with jwt-secret is accepted, whoever issued it. Set jwt-issuer to "
+    "the issuer your tokens carry to check it.";
+
 } // namespace
 
 std::string SecurityAuditor::classifyPassword(const std::string& password) {
@@ -102,6 +109,9 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
                 "auth"
             });
         }
+        if (global.type == "bearer" && global.jwt_issuer.empty()) {
+            warnings.push_back({"AUTH_JWT_ISSUER_UNCHECKED", kIssuerUnchecked, "auth"});
+        }
     }
 
     for (const auto& endpoint : *config.getEndpoints()) {
@@ -135,6 +145,12 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
             });
         }
 
+        // Not for credentials taken from the top-level block: reported there.
+        if (endpoint.auth.enabled && endpoint.auth.type == "bearer" &&
+            !endpoint.auth.credentials_inherited && endpoint.auth.jwt_issuer.empty()) {
+            warnings.push_back({"AUTH_JWT_ISSUER_UNCHECKED", kIssuerUnchecked, location});
+        }
+
         // The dispatch in AuthMiddleware knows "basic", "bearer" and "oidc".
         // Anything else matches no branch, so the endpoint denies every
         // request - it fails closed, but silently, and a config that reads as
@@ -166,6 +182,9 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
             "This usually means the environment variable it interpolates is unset.",
             "mcp.auth"
         });
+    }
+    if (mcp.auth.enabled && mcp.auth.type == "bearer" && mcp.auth.jwt_issuer.empty()) {
+        warnings.push_back({"AUTH_JWT_ISSUER_UNCHECKED", kIssuerUnchecked, "mcp.auth"});
     }
 
     if (mcp.enabled && !mcp.auth.enabled) {

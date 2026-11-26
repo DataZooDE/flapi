@@ -28,6 +28,7 @@ std::string basicHeader(const std::string& user, const std::string& password) {
 std::string bearerToken(const std::string& secret, const std::string& issuer,
                         const std::string& subject, const std::set<std::string>& roles) {
     return jwt::create()
+        .set_expires_at(std::chrono::system_clock::now() + std::chrono::minutes(10))
         .set_issuer(issuer)
         .set_payload_claim("sub", jwt::claim(subject))
         .set_payload_claim("roles", jwt::claim(roles))
