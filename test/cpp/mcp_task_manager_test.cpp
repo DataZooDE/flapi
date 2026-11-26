@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "mcp_task_manager.hpp"
+#include "request_context.hpp"
 
 namespace flapi {
 namespace test {
@@ -133,6 +134,56 @@ TEST_CASE("MCPTaskManager: queue backpressure returns an empty id", "[mcp][tasks
     REQUIRE_FALSE(id2.empty());
     REQUIRE(id3.empty());
     release.store(true);
+}
+
+TEST_CASE("MCPTaskManager: a work that reports a failed tool result ends the task failed",
+          "[mcp][tasks][issue275]") {
+    // A tool whose SQL fails returns an isError envelope rather than throwing.
+    // The task must end `failed`, keeping both the message and the envelope.
+    MCPTaskManager m(1, 16);
+    const std::string envelope = R"({"content":[{"type":"text","text":"bad"}],"isError":true})";
+    auto id = m.submit("tool", "alice", 60000, 100,
+                       [&envelope](const std::atomic<bool>&, const MCPTaskManager::SetInterrupt&) -> std::string {
+                           throw MCPTaskManager::FailedResult("bad", envelope);
+                       });
+    REQUIRE(waitFor(m, id, "alice", Status::Failed));
+    MCPTaskManager::Task t;
+    bool found = false;
+    REQUIRE(m.get(id, "alice", t, found));
+    REQUIRE(t.error_message == "bad");
+    REQUIRE(t.result_json == envelope);
+}
+
+TEST_CASE("MCPTaskManager: the work runs under the submitting request's identity",
+          "[mcp][tasks][issue275]") {
+    // The worker thread has no request of its own: without the submitter's
+    // context, the tool's error text and log lines lose the request id.
+    MCPTaskManager m(1, 16);
+    std::string seen_request_id;
+    std::string seen_trace_id;
+    std::string seen_span_id;
+    std::string id;
+    {
+        RequestContext rc;
+        RequestContext::mintRequestId(rc.request_id);
+        rc.setTraceId("0123456789abcdef0123456789abcdef");
+        rc.setSpanId("0123456789abcdef");
+        RequestContextScope scope(&rc);
+        id = m.submit("tool", "alice", 60000, 100,
+                      [&](const std::atomic<bool>&, const MCPTaskManager::SetInterrupt&) {
+                          if (const auto* cur = RequestContextScope::current()) {
+                              seen_request_id = std::string(cur->requestIdView());
+                              seen_trace_id = std::string(cur->traceIdView());
+                              seen_span_id = std::string(cur->spanIdView());
+                          }
+                          return std::string("{}");
+                      });
+        REQUIRE(waitFor(m, id, "alice", Status::Completed));
+        REQUIRE(seen_request_id == std::string(rc.requestIdView()));
+    }
+    REQUIRE_FALSE(seen_request_id.empty());
+    REQUIRE(seen_trace_id == "0123456789abcdef0123456789abcdef");
+    REQUIRE(seen_span_id == "0123456789abcdef");
 }
 
 } // namespace test

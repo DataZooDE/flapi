@@ -76,6 +76,15 @@ mcp:
     with open(os.path.join(sqls, "slow.yaml"), "w") as f:
         f.write("template-source: slow.sql\nconnection: [inmem]\nmcp-tool: {name: slow, description: s, async: true}\n")
 
+    # A tool whose SQL fails at run time (#275): the task must end `failed`.
+    with open(os.path.join(sqls, "broken.sql"), "w") as f:
+        f.write("SELECT CAST('not a number' AS INTEGER) AS n\n")
+    with open(os.path.join(sqls, "broken.yaml"), "w") as f:
+        f.write("template-source: broken.sql\nconnection: [inmem]\nmcp-tool: {name: broken, description: b, async: true}\n")
+    with open(os.path.join(sqls, "broken_after.yaml"), "w") as f:
+        f.write("template-source: broken.sql\nconnection: [inmem]\n"
+                "mcp-tool: {name: broken_after, description: b, async-after-ms: 5000}\n")
+
     log = open(os.path.join(tmp, "server.log"), "w")
     proc = subprocess.Popen([binary, "-c", os.path.join(tmp, "flapi.yaml"), "--no-telemetry"],
                             cwd=tmp, stdout=log, stderr=subprocess.STDOUT)
@@ -192,6 +201,43 @@ class TestTasks:
         # Must transition to cancelled quickly — proof the query was interrupted.
         cancelled = _wait_status(server, task_id, "cancelled", tries=20)
         assert cancelled is not None, "long query was not cancelled preemptively"
+
+    def test_failing_tool_ends_task_failed_with_request_id(self, server):
+        # #275: the work returned an isError envelope instead of throwing, so the
+        # task ended `completed`; and the worker had no request context, so the
+        # error text said "...in the server log." without a request id.
+        r = _call(server, META_TASKS, name="broken")
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert result["resultType"] == "task", result
+        task_id = result["task"]["taskId"]
+        call_request_id = r.headers.get("X-Request-Id")
+        assert call_request_id, dict(r.headers)
+
+        terminal = None
+        for _ in range(40):
+            g = _get(server, META_TASKS, task_id).json()["result"]
+            if g["task"]["status"] != "working":
+                terminal = g
+                break
+            time.sleep(0.25)
+        assert terminal is not None, "task did not finish"
+        assert terminal["task"]["status"] == "failed", terminal
+        # The error names the request id of the tools/call that submitted it.
+        assert f"request_id {call_request_id}" in terminal["error"], terminal
+        # The tool's own isError result is still there for the client.
+        assert terminal["result"]["isError"] is True, terminal
+        assert call_request_id in terminal["result"]["content"][0]["text"], terminal
+
+    def test_failing_async_after_tool_answers_inline_with_is_error(self, server):
+        # async-after: a failure inside the grace window is answered inline, as
+        # a synchronous call would be, not handed back as a task.
+        r = _call(server, META_TASKS, name="broken_after")
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert result["resultType"] == "complete", result
+        assert result["isError"] is True, result
+        assert "request_id req-" in result["content"][0]["text"], result
 
 
 def _wait_status(base, task_id, want, tries=40):
