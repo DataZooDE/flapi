@@ -58,6 +58,17 @@ std::string toolSuccessResultJson(const std::string& result_text, ToolPayload pa
 std::string mcpWwwAuthenticate(const std::string& auth_type, const std::string& resource_metadata_url,
                                bool insufficient_scope);
 
+/// completion/complete over an enum: the allowed values starting with
+/// `prefix`, at most `kMaxValues` of them (the MCP spec's cap), `total` the
+/// number of matches and `has_more` whether matches were left out.
+struct CompletionValues {
+    static constexpr std::size_t kMaxValues = 100;
+    std::vector<std::string> values;
+    std::size_t total = 0;
+    bool has_more = false;
+};
+CompletionValues completeEnumValues(const std::vector<std::string>& allowed, const std::string& prefix);
+
 /// The payload kind a tool handler's result metadata says it produced.
 ToolPayload toolPayloadOf(const std::unordered_map<std::string, std::string>& metadata);
 

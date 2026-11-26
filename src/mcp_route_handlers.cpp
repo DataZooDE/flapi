@@ -332,6 +332,23 @@ std::string toolSuccessResultJson(const std::string& result_text, ToolPayload pa
     return out.substr(0, close) + ",\"structuredContent\":" + structured + out.substr(close);
 }
 
+CompletionValues completeEnumValues(const std::vector<std::string>& allowed, const std::string& prefix) {
+    // Counts the MATCHES. It counted every enum value, and stopped counting at
+    // the 50-value cut, so `total` was neither the matches nor the enum size.
+    CompletionValues out;
+    for (const auto& value : allowed) {
+        if (value.compare(0, prefix.size(), prefix) != 0) {
+            continue;
+        }
+        ++out.total;
+        if (out.values.size() < CompletionValues::kMaxValues) {
+            out.values.push_back(value);
+        }
+    }
+    out.has_more = out.total > out.values.size();
+    return out;
+}
+
 ToolPayload toolPayloadOf(const std::unordered_map<std::string, std::string>& metadata) {
     // A sample summary and a dry-run preview describe the call; neither has rows.
     for (const char* key : {"response_sampled", "dry_run"}) {
@@ -2633,34 +2650,23 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
         // Build completion suggestions based on validators
         crow::json::wvalue completion;
         crow::json::wvalue values = crow::json::wvalue::list();
-        int total_count = 0;
-        bool has_more = false;
+        CompletionValues matches;
 
         // Check for enum validator to provide enum values
         for (const auto& validator : matching_field->validators) {
             if (validator.type == "enum" && validator.allowedValues.size() > 0) {
-                // Filter enum values based on prefix
-                int added_count = 0;
-                for (const auto& enum_val : validator.allowedValues) {
-                    if (value_prefix.empty() || enum_val.find(value_prefix) == 0) {
-                        if (added_count < 50) {  // Limit results to 50
-                            values[added_count] = enum_val;
-                            added_count++;
-                        } else {
-                            has_more = true;
-                            break;
-                        }
-                    }
-                    total_count++;
-                }
+                matches = completeEnumValues(validator.allowedValues, value_prefix);
                 break;
             }
+        }
+        for (std::size_t i = 0; i < matches.values.size(); ++i) {
+            values[static_cast<unsigned>(i)] = matches.values[i];
         }
 
         // If no enum validator, return empty completion (client can use its own methods)
         completion["values"] = std::move(values);
-        completion["total"] = total_count;
-        completion["hasMore"] = has_more;
+        completion["total"] = static_cast<int64_t>(matches.total);
+        completion["hasMore"] = matches.has_more;
 
         // The spec wraps the payload under a "completion" key:
         // { "completion": { "values": [...], "total": N, "hasMore": bool } }.
