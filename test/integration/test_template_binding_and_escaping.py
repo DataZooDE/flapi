@@ -6,6 +6,9 @@
 * (b) `{{ }}` doubles single quotes instead of HTML-escaping: a section-scoped
   `c = '{{ params.name }}'` matches O'Brien and `{{ conn.path }}` is a real path,
   while the Swagger UI page keeps HTML escaping.
+* (c) `--validate-config` warns about free text pasted where it cannot bind.
+* (d) `template/expand?validate_only` reports only variables that are really
+  undefined, by their own names, and answers 200 even when `valid` is false.
 """
 import os
 import shutil
@@ -92,6 +95,11 @@ FILES = {
                     "{{#params.name}}  AND name = '{{ params.name }}'\n{{/params.name}}ORDER BY id"),
     "path.yaml": endpoint("/path", "path.sql", connection="files"),
     "path.sql": "SELECT count(*) AS n FROM read_csv('{{ conn.path }}')",
+    # (d) validate_only
+    "vars.yaml": endpoint("/vars", "vars.sql", NAME, connection="files"),
+    "vars.sql": ("SELECT count(*) AS n FROM read_csv('{{{ conn.path }}}') WHERE 1=1 {{! a comment }}\n"
+                 "{{#params.name}}  AND b = '{{ params.name }}'\n{{/params.name}}"
+                 "{{^params.name}}  AND b <> ''\n{{/params.name}}"),
 }
 
 
@@ -267,3 +275,35 @@ def test_validate_config_warns_about_free_text_pasted_where_it_cannot_bind(tmp_p
     assert not any("safe.sql" in l for l in risky), risky
     # The (a)/(b) project itself is clean: every free-text site there binds or is quote-doubled.
     assert not any(f"{n}.sql" in l for l in risky for n in ("exact", "like", "section", "sorted", "born")), risky
+
+
+
+# ------------------------------------------------------------------ (d) validate_only
+
+def validate(server, slug, body):
+    r = requests.post(f"{server.base}/api/v1/_config/endpoints/{slug}/template/expand?validate_only=1",
+                      headers=AUTH, json=body, timeout=30)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def undefined(result):
+    return sorted(w["variable"] for w in result["warnings"] if w["type"] == "undefined_variable")
+
+
+def test_validate_only_reports_no_false_undefined_variables(server):
+    for params in ({}, {"name": "x"}):
+        result = validate(server, "-vars", {"parameters": params})
+        assert result["valid"] is True, result
+        assert undefined(result) == [], result
+
+
+def test_validate_only_names_what_is_really_undefined(server):
+    result = validate(server, "-vars", {"parameters": {"name": "x"},
+                                         "template": "SELECT '{{ params.nope }}', '{{{ conn.nothere }}}' AS b"})
+    assert undefined(result) == ["conn.nothere", "params.nope"], result
+
+
+def test_validate_only_answers_200_when_the_sql_is_invalid(server):
+    result = validate(server, "-vars", {"parameters": {}, "template": "SELEC 1"})
+    assert result["valid"] is False, result

@@ -5,6 +5,9 @@
 #include <fstream>
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#include "mustache_syntax_check.hpp"
+#include <crow/mustache.h>
+#include <set>
 
 using namespace flapi;
 namespace fs = std::filesystem;
@@ -168,4 +171,58 @@ TEST_CASE("validateScript parses, binds and never runs a populate script", "[f2]
     db->reset();
     db.reset();
     config_manager.reset();
+}
+
+namespace {
+
+std::set<std::string> Names(const std::vector<flapi::MustacheVariable>& variables) {
+    std::set<std::string> out;
+    for (const auto& v : variables) {
+        out.insert(v.name);
+    }
+    return out;
+}
+
+crow::mustache::context SampleContext() {
+    crow::mustache::context ctx;
+    ctx["conn"]["path"] = "/data/x.parquet";
+    ctx["params"]["name"] = "O'Brien";
+    ctx["auth"]["authenticated"] = "";
+    return ctx;
+}
+
+}  // namespace
+
+TEST_CASE("validate_only: variables are found the way Mustache resolves them (#277)", "[f2][validate][variables]") {
+    const auto ctx = SampleContext();
+    const std::set<std::string> declared = {"name", "region", "limit", "offset"};
+
+    SECTION("triple braces, sections, inverted sections, closes and comments name nothing undefined") {
+        const std::string body =
+            "SELECT * FROM read_parquet('{{{ conn.path }}}') WHERE 1=1 {{! a comment }}\n"
+            "{{#params.name}} AND n = '{{ params.name }}' {{/params.name}}\n"
+            "{{^params.region}} AND r = 'eu' {{/params.region}}";
+        REQUIRE(flapi::FindUndefinedTemplateVariables(body, ctx, declared).empty());
+    }
+    SECTION("a declared parameter that was not passed is fine") {
+        REQUIRE(flapi::FindUndefinedTemplateVariables("WHERE r = '{{ params.region }}'", ctx, declared).empty());
+    }
+    SECTION("a name relative to a section is not looked up at the top") {
+        REQUIRE(flapi::FindUndefinedTemplateVariables("{{#params.name}}{{.}} {{ length }}{{/params.name}}", ctx,
+                                                      declared)
+                    .empty());
+    }
+    SECTION("auth.* is always defined, empty in the config service") {
+        REQUIRE(flapi::FindUndefinedTemplateVariables("'{{{ auth.username }}}' '{{ auth.roles }}'", ctx, declared)
+                    .empty());
+    }
+    SECTION("what is really missing is reported once, by its own name") {
+        const auto found = flapi::FindUndefinedTemplateVariables(
+            "{{ params.nope }} {{{ conn.nothere }}} {{#params.nope}}x{{/params.nope}} {{ env.UNSET }} {{ top }}", ctx,
+            declared);
+        REQUIRE(Names(found) == std::set<std::string>{"params.nope", "conn.nothere", "env.UNSET", "top"});
+        REQUIRE(found.size() == 4);
+        REQUIRE(found[0].line == 1);
+        REQUIRE(found[0].column == 1);
+    }
 }
