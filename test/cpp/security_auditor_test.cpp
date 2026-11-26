@@ -561,7 +561,7 @@ mcp-tool:
     auto warnings = SecurityAuditor().audit(*temp.createConfigManager());
     const auto found = withCode(warnings, "MCP_TOOL_BYPASSES_REST_AUTH");
     REQUIRE(found.size() == 1);
-    REQUIRE(found[0].location == "endpoint GET /orders");
+    REQUIRE(found[0].location == "sqls/orders.yaml (GET /orders)");
     REQUIRE(found[0].message.find("orders_tool") != std::string::npos);
 }
 
@@ -624,7 +624,7 @@ auth:
     const auto found = withCode(warnings, "ENDPOINT_AUTH_KEY_IGNORED");
     // Only the endpoint WITHOUT an auth block: the other one's block is read.
     REQUIRE(found.size() == 1);
-    REQUIRE(found[0].location == "endpoint GET /orders");
+    REQUIRE(found[0].location == "sqls/orders.yaml (GET /orders)");
     REQUIRE(found[0].message.find("Authentication") != std::string::npos);
     REQUIRE(found[0].message.find("descripton") == std::string::npos);
 }
@@ -678,11 +678,58 @@ connection: [test]
     const auto warnings = SecurityAuditor().audit(*config_manager);
     const auto found = withCode(warnings, "ENDPOINT_DUPLICATE_AUTH_KEY");
     REQUIRE(found.size() == 1);
-    REQUIRE(found[0].location == "endpoint GET /orders");
+    REQUIRE(found[0].location == "sqls/orders.yaml (GET /orders)");
 
     const auto refusal = SecurityAuditor::strictRefusal(warnings);
     REQUIRE(refusal.has_value());
     REQUIRE(refusal->find("ENDPOINT_DUPLICATE_AUTH_KEY") != std::string::npos);
+}
+
+TEST_CASE("SecurityAuditor: an empty allowed-roles list under mcp.auth is flagged too",
+          "[security][audit][mcp]") {
+    // `allowed-roles: []` lets no one in, exactly like a missing list.
+    TempTestConfig temp(kMcpAuthOnConfig, "audit_mcp_empty_roles");
+    temp.writeEndpoint("no-roles.yaml", R"(
+template-source: q.sql
+connection: [test]
+mcp-tool:
+  name: nobody_tool
+  description: Empty allowed-roles
+  allowed-roles: []
+)");
+    temp.writeSqlTemplate("q.sql", "SELECT 1 AS id");
+
+    const auto found = withCode(SecurityAuditor().audit(*temp.createConfigManager()), "MCP_TOOL_NO_ALLOWED_ROLES");
+    REQUIRE(found.size() == 1);
+    REQUIRE(found[0].message.find("nobody_tool") != std::string::npos);
+    REQUIRE(found[0].message.find("empty") != std::string::npos);
+    // The file, not "endpoint MCP tool: nobody_tool".
+    REQUIRE(found[0].location == "sqls/no-roles.yaml");
+}
+
+TEST_CASE("SecurityAuditor: a tool-only endpoint with its own auth block is described as such",
+          "[security][audit][mcp]") {
+    // A tool-only file has no REST route, so "requires authentication over
+    // REST" is wrong: its auth: block simply does not apply to MCP.
+    TempTestConfig temp(kMcpAuthOffConfig, "audit_mcp_tool_only_auth");
+    temp.writeEndpoint("tool-only.yaml", R"(
+template-source: q.sql
+connection: [test]
+auth:
+  enabled: true
+  type: bearer
+  jwt-secret: rest-secret-long-enough
+mcp-tool:
+  name: tool_only
+  description: Tool only
+)");
+    temp.writeSqlTemplate("q.sql", "SELECT 1 AS id");
+
+    const auto found = withCode(SecurityAuditor().audit(*temp.createConfigManager()), "MCP_TOOL_BYPASSES_REST_AUTH");
+    REQUIRE(found.size() == 1);
+    REQUIRE(found[0].location == "sqls/tool-only.yaml");
+    REQUIRE(found[0].message.find("over REST") == std::string::npos);
+    REQUIRE(found[0].message.find("auth: block does not apply to MCP") != std::string::npos);
 }
 
 } // namespace test
