@@ -703,3 +703,66 @@ TEST_CASE("EndpointConfigParser: a write endpoint's cache needs template-file", 
     }
     fs::remove(config_file);
 }
+
+// #282: an endpoint key nothing reads used to pass validation silently. A
+// section include keeps the section's own name, so `{{include:auth-prod from
+// common.yaml}}` added an `auth-prod:` key and left the endpoint public.
+TEST_CASE("EndpointConfigParser: unknown endpoint keys are reported", "[endpoint_parser][unknown_keys]") {
+    const fs::path dir = fs::temp_directory_path() / "flapi_unknown_endpoint_keys";
+    fs::create_directories(dir);
+    std::string config_file = createMinimalFlapiConfig();
+    ConfigManager manager{fs::path(config_file)};
+
+    auto write = [&](const std::string& name, const std::string& body) {
+        std::ofstream(dir / name) << body;
+        return dir / name;
+    };
+    write("test.sql", "SELECT 1");
+    auto warnings_of = [&](const fs::path& file) {
+        auto result = manager.validateEndpointConfigFile(file);
+        std::string all;
+        for (const auto& w : result.warnings) {
+            all += w + "\n";
+        }
+        return all;
+    };
+
+    SECTION("an unknown key warns, naming it") {
+        auto file = write("e1.yaml", "url-path: /t\ntemplate-source: test.sql\nconnection: [test_db]\n"
+                                     "my-annotation: hello\n");
+        const auto w = warnings_of(file);
+        REQUIRE(w.find("Unknown endpoint key `my-annotation`") != std::string::npos);
+    }
+    SECTION("a mis-named section include gets the `as` hint") {
+        write("common.yaml", "auth-prod:\n  enabled: true\n  type: basic\n  users:\n"
+                             "    - username: u\n      password: p\n");
+        auto file = write("e2.yaml", "url-path: /t\ntemplate-source: test.sql\nconnection: [test_db]\n"
+                                     "{{include:auth-prod from common.yaml}}\n");
+        const auto w = warnings_of(file);
+        REQUIRE(w.find("Unknown endpoint key `auth-prod`") != std::string::npos);
+        REQUIRE(w.find("did you mean `auth`?") != std::string::npos);
+        REQUIRE(w.find("{{include:auth-prod as auth from") != std::string::npos);
+    }
+    SECTION("near misses name the key that was meant") {
+        auto file = write("e3.yaml", "url-path: /t\ntemplate-source: test.sql\nconnection: [test_db]\n"
+                                     "rate_limit:\n  enabled: true\ntemplate_source: x.sql\n");
+        const auto w = warnings_of(file);
+        REQUIRE(w.find("Unknown endpoint key `rate_limit`") != std::string::npos);
+        REQUIRE(w.find("did you mean `rate-limit`?") != std::string::npos);
+        REQUIRE(w.find("did you mean `template-source`?") != std::string::npos);
+    }
+    SECTION("every key the parser reads is known") {
+        auto file = write("e4.yaml",
+                          "url-path: /t\nmethod: GET\nallow-shadowing: false\ndescription: d\n"
+                          "with-pagination: true\ntotal-count: true\nrequest-fields-validation: false\n"
+                          "template-source: test.sql\nrequest: []\nconnection: [test_db]\n"
+                          "rate-limit:\n  enabled: false\nauth:\n  enabled: false\n"
+                          "cache:\n  enabled: false\nheartbeat:\n  enabled: false\n"
+                          "operation:\n  type: read\n"
+                          "mcp-tool:\n  name: t\n  description: d\n");
+        const auto w = warnings_of(file);
+        REQUIRE(w.find("Unknown endpoint key") == std::string::npos);
+    }
+    fs::remove_all(dir);
+    fs::remove(config_file);
+}
