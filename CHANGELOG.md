@@ -2,6 +2,31 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Fixed
+
+- **Bearer tokens get one answer on REST and MCP (#281).** Both run the same HS256 check
+  now. An unset `jwt-issuer` meant `iss` had to be `""` on REST (so ordinary tokens got 401)
+  and `"flapi"` on MCP; it now means the issuer is not checked, on both. A token without a
+  `roles` claim authenticates with no roles on REST too (it was 401), and a bearer token's
+  `email` claim fills `auth.email` on REST as it did on MCP.
+
+### Security
+
+- **Bearer tokens without `exp` are refused (#281).** They never expired. `jwt-require-exp:
+  false` accepts them, for tokens you cannot reissue.
+- **New `jwt-audience` (#281)** on endpoint, top-level and `mcp.auth` bearer blocks: one name
+  or a list; the token's `aud` must contain one of them. An empty entry (an unset
+  `{{env.X}}`) stops startup instead of switching the check off.
+- **Startup reports `AUTH_JWT_ISSUER_UNCHECKED`** for a bearer block without `jwt-issuer`.
+
+### Upgrade notes
+
+- **Bearer tokens without `exp` now get 401** unless the block sets `jwt-require-exp: false`.
+- **`mcp.auth.jwt-issuer` no longer defaults to `flapi`.** Unset, any issuer is accepted
+  (with a startup warning); set `jwt-issuer: flapi` to keep checking it.
+
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 
 ### Security

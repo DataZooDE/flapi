@@ -1308,7 +1308,9 @@ mcp:
     enabled: true
     type: bearer
     jwt-secret: "{{env.JWT_SECRET}}"
-    jwt-issuer: "my-auth-server"
+    jwt-issuer: "my-auth-server"     # unset: iss is not checked (AUTH_JWT_ISSUER_UNCHECKED)
+    jwt-audience: "flapi-mcp"        # optional, string or list: aud must contain one
+    # jwt-require-exp: false         # default true: a token without exp is refused
 ```
 
 **Request Header:**
@@ -1321,10 +1323,16 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 | Claim | Description |
 |-------|-------------|
-| `sub` | Username/subject |
-| `roles` | Array of role strings |
-| `iss` | Issuer (must match `jwt-issuer`) |
-| `exp` | Expiration timestamp |
+| `sub` | Username/subject (required, a string) |
+| `roles` | Array of role strings, or one string. Optional: without it the caller has no roles |
+| `email` | Optional; becomes `auth.email` |
+| `iss` | Must equal `jwt-issuer` when that is set; not checked otherwise |
+| `aud` | Must contain one of `jwt-audience` when that is set |
+| `exp` | Required unless `jwt-require-exp: false`; an expired one is always refused |
+| `nbf`, `iat` | Refused when in the future |
+
+Only HS256 is accepted. This is the same check REST bearer endpoints run (CONFIG_REFERENCE §7.3). Up to
+v26.11.26 an unset `mcp.auth.jwt-issuer` meant `"flapi"`; it now means the issuer is not checked.
 
 ### 8.3 OIDC Auth
 

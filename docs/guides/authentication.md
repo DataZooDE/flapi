@@ -345,7 +345,7 @@ After authentication the template sees who is calling:
 |---|---|---|
 | `auth.username` | the user name, token `sub`, or OIDC `username-claim` | every authenticated request |
 | `auth.roles` | the roles, **joined with commas**: `sales,building,furniture` | every authenticated request |
-| `auth.email` | the OIDC `email-claim`; over MCP also a bearer token's `email` | OIDC, MCP bearer; empty otherwise |
+| `auth.email` | the OIDC `email-claim`, or a bearer token's `email` | OIDC and bearer, when the token has one; empty otherwise |
 | `auth.type` | `basic`, `bearer` or `oidc` | every authenticated request |
 | `auth.authenticated` | `true` | every authenticated request |
 
@@ -767,17 +767,27 @@ A token is accepted when all of this holds:
 
 | Check | Fails with |
 |---|---|
-| signed with HS256 and `jwt-secret` | `401` |
-| `iss` equals `jwt-issuer` exactly | `401` |
-| `sub` is a string: it becomes `auth.username` | `401` |
-| `roles` is an array of strings, possibly empty: it becomes `auth.roles` | `401` (a missing claim, or a single string) |
-| `exp`, when the token has one, is in the future | `401` |
+| signed with HS256 and `jwt-secret` (`alg: none` or any other is refused) | `401` |
+| `exp` is present and in the future (`jwt-require-exp: false` drops "present") | `401` |
 | `nbf` and `iat`, when present, are not in the future | `401` |
-| one of the endpoint's `roles` is in the token | `403` |
+| `iss` equals `jwt-issuer` exactly, when `jwt-issuer` is set | `401` |
+| `aud` contains one of `jwt-audience`, when that is set | `401` |
+| `sub` is a string: it becomes `auth.username` | `401` |
+| one of the endpoint's `roles` is in the token's `roles` | `403` |
 
-`aud` is not checked, and a token without `exp` never expires, so mint tokens
-with one. An empty `jwt-secret` (an unset variable) refuses every token and
-the auditor reports `AUTH_EMPTY_JWT_SECRET`. A refused token gets
+`roles` (an array of strings, or one string) becomes `auth.roles`; a token
+without it authenticates with no roles. A string `email` becomes `auth.email`.
+Without `jwt-issuer` any `iss` is accepted and the auditor reports
+`AUTH_JWT_ISSUER_UNCHECKED`; set it. `jwt-audience` takes one name or a list,
+so tokens minted for another service are refused:
+
+```yaml
+  jwt-audience: [reports-api]
+```
+
+An empty `jwt-secret` (an unset variable) refuses every token and
+the auditor reports `AUTH_EMPTY_JWT_SECRET`. MCP bearer (`mcp.auth.type:
+bearer`) runs exactly the same check. A refused token gets
 `WWW-Authenticate: Bearer realm="flAPI", error="invalid_token"`; no token at all
 gets the bare `Bearer realm="flAPI"`.
 
@@ -981,8 +991,8 @@ server.
   passwords and tokens are readable on plain HTTP. Bind with `--host` to the
   interface you mean.
 - **Passwords:** PBKDF2 hashes, from `{{env.NAME}}` or AWS Secrets Manager.
-- **Bearer:** `jwt-issuer` set, every token carries `exp`, a secret of at
-  least 32 random bytes. Rotation is a new secret and a restart, which ends all
+- **Bearer:** `jwt-issuer` and `jwt-audience` set, every token carries `exp`
+  (the default refuses one without), a secret of at least 32 random bytes. Rotation is a new secret and a restart, which ends all
   tokens.
 - **MCP:** `mcp.auth` on and `allowed-roles` on every tool, or no `mcp-tool`
   at all.
@@ -998,7 +1008,6 @@ server.
 
 ## Limits you should know
 
-- Bearer checks no `aud`, and a token without `exp` never expires.
 - OIDC accepts RS256, RS384 and RS512 only, and exactly one `iss` per block,
   so it cannot accept tokens from several Entra ID tenants.
 - An OIDC `groups` claim grants nothing.
@@ -1023,10 +1032,10 @@ server.
   block, users included, and every login fails. Name only `roles:` to keep the
   top-level users.
 - **Editing a file and not restarting.** flAPI reads its config at startup.
-- **Bearer without `jwt-issuer`.** The token's `iss` must then be the empty
-  string, so ordinary tokens get `401`. Always set `jwt-issuer`.
-- **A token without a `roles` array.** REST bearer refuses it with `401`; send
-  `"roles": []` when the caller has none.
+- **Bearer without `jwt-issuer`.** Any token signed with the secret is
+  accepted, whoever issued it (`AUTH_JWT_ISSUER_UNCHECKED`). Set `jwt-issuer`.
+- **A bearer token without `exp`.** Refused with `401`. Mint every token with
+  one; `jwt-require-exp: false` exists for tokens you cannot change.
 - **OIDC without `allowed-audiences`.** Any token from the issuer passes,
   including tokens for other applications.
 - **An OIDC `issuer-url` that differs from `iss` by a trailing slash.** The

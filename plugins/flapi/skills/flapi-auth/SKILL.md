@@ -74,9 +74,13 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   the listed roles gets **403** `{"error":"Forbidden","message":...}`; no or
   wrong credentials stay 401; `roles: []` (or absent) = any authenticated user.
   The global block accepts `roles` too.
-- **Bearer tokens must carry `sub`, an `iss` equal to `jwt-issuer`, and a `roles`
-  array** (it may be empty). Set `jwt-issuer`; an empty one matches no token.
-  An expired `exp` is 401. An empty `jwt-secret` (unset env var) refuses all
+- **Bearer tokens must carry a string `sub` and an `exp`** (a token without
+  `exp` is 401 unless `jwt-require-exp: false`; an expired one always is). `iss`
+  must equal `jwt-issuer` and `aud` contain one of `jwt-audience` (string or
+  list) where those are set; unset `jwt-issuer` = any issuer, startup warns
+  `AUTH_JWT_ISSUER_UNCHECKED`. `roles` is optional (missing = no roles, so a
+  `roles:` list answers 403); `email` fills `auth.email`. REST and `mcp.auth`
+  run the same check. An empty `jwt-secret` (unset env var) refuses all
   tokens (`AUTH_EMPTY_JWT_SECRET`).
 - **Passwords: store a PBKDF2-SHA256 hash** `$pbkdf2-sha256$<iter>$<salt>$<hash>`.
   passlib's `pbkdf2_sha256` output, standard and URL-safe base64 all verify.
@@ -221,7 +225,9 @@ auth:
   enabled: true
   type: bearer                             # `jwt` is an alias; auth.type in SQL reads "bearer"
   jwt-secret: '{{env.FLAPI_JWT_SECRET}}'   # >= 32 random bytes
-  jwt-issuer: my-issuer                    # token "iss" must equal this
+  jwt-issuer: my-issuer                    # token "iss" must equal this (unset: not checked)
+  jwt-audience: orders-api                 # optional, string or list: "aud" must contain one
+  jwt-require-exp: true                    # default; false accepts tokens without "exp"
 ```
 
 Mint a test token without extra packages:
@@ -387,8 +393,8 @@ curl -s -w ' %{http_code}\n' -u agent:reader-pass $MCP -H 'Content-Type: applica
 # header WWW-Authenticate: Bearer error="insufficient_scope"
 ```
 
-- `mcp.auth.type: bearer` reads `jwt-secret` and `jwt-issuer` (default `flapi`);
-  the `roles` claim is optional there. `type: oidc` reads `mcp.auth.oidc` (same
+- `mcp.auth.type: bearer` reads `jwt-secret`, `jwt-issuer` (no default: unset
+  = not checked), `jwt-audience` and `jwt-require-exp`, the same check as REST. `type: oidc` reads `mcp.auth.oidc` (same
   keys as above).
 - Every MCP method needs auth, `initialize` included; `server/discover` is
   always public. Relax one method with `mcp.auth.methods.<method>.required: false`
@@ -467,6 +473,7 @@ load error, `AUTH_UNKNOWN_TYPE`, see above.)
 | `AUTH_MD5_PASSWORD` | 32-hex MD5 password: unsalted, migrate to PBKDF2 |
 | `AUTH_BCRYPT_UNSUPPORTED` | bcrypt hash: flAPI cannot verify it, every login as that user is refused |
 | `AUTH_EMPTY_JWT_SECRET` | bearer endpoint, global block or `mcp.auth` with empty `jwt-secret`: fails closed, every token is refused |
+| `AUTH_JWT_ISSUER_UNCHECKED` | bearer endpoint, global block or `mcp.auth` without `jwt-issuer`: any token signed with the secret is accepted, whoever issued it |
 | `CORS_WILDCARD_WITH_AUTH` | `cors.allow-origins` empty or `"*"` while any auth is enabled |
 | `MCP_UNAUTHENTICATED_TOOLS` | `mcp.enabled` with tools and `mcp.auth.enabled: false` |
 | `CREDENTIAL_TOO_SHORT_TO_REDACT` | a credential connection property under 4 chars: error detail is withheld |

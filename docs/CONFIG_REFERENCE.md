@@ -721,7 +721,9 @@ Global authentication settings that apply to all endpoints unless overridden.
 | `auth.enabled` | boolean | `true` if the block sets `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager`, else `false` | Enable authentication for every REST endpoint without its own `auth:` block. The same default applies inside an endpoint's `auth:` block; only `enabled: false` turns it off |
 | `auth.type` | string | - | Default auth type: `basic`, `bearer` (alias `jwt`), `oidc`. Anything else fails to load (`AUTH_UNKNOWN_TYPE`) |
 | `auth.jwt-secret` | string | - | JWT signing key |
-| `auth.jwt-issuer` | string | - | Expected JWT issuer claim |
+| `auth.jwt-issuer` | string | - | Expected JWT issuer claim; unset = `iss` not checked (`AUTH_JWT_ISSUER_UNCHECKED`) |
+| `auth.jwt-audience` | string or array[string] | - | The token's `aud` must contain one of these; unset = `aud` not checked |
+| `auth.jwt-require-exp` | boolean | `true` | Refuse a bearer token without `exp` |
 | `auth.users` | array | - | User list for basic auth |
 | `auth.roles` | array[string] | `[]` | Roles a caller must hold (any one of them). Empty = any authenticated caller |
 
@@ -2122,7 +2124,9 @@ JSON Web Token authentication.
 | `auth.enabled` | boolean | Enable authentication |
 | `auth.type` | string | `jwt` — an alias of `bearer` (§7.3); both behave identically |
 | `auth.jwt-secret` | string | Secret key for JWT validation |
-| `auth.jwt-issuer` | string | Expected issuer claim |
+| `auth.jwt-issuer` | string | Expected issuer claim (§7.3) |
+| `auth.jwt-audience` | string or array[string] | Accepted audiences (§7.3) |
+| `auth.jwt-require-exp` | boolean | Refuse tokens without `exp` (default `true`, §7.3) |
 
 **Example:**
 
@@ -2143,7 +2147,9 @@ Bearer token authentication with an HS256-signed JWT. `type: jwt` is the same me
 | `auth.enabled` | boolean | Enable authentication |
 | `auth.type` | string | Must be `bearer` |
 | `auth.jwt-secret` | string | Secret key for token validation |
-| `auth.jwt-issuer` | string | Expected issuer claim |
+| `auth.jwt-issuer` | string | Expected `iss`. Unset: `iss` is not checked, and startup reports `AUTH_JWT_ISSUER_UNCHECKED` |
+| `auth.jwt-audience` | string or array[string] | The token's `aud` (a string or an array) must contain one of these. Unset: not checked. An empty entry stops startup |
+| `auth.jwt-require-exp` | boolean | Default `true`: a token without `exp` is refused. `false` accepts one (an expired `exp` is still refused) |
 
 **Example:**
 
@@ -2153,7 +2159,15 @@ auth:
   type: bearer
   jwt-secret: '{{env.API_TOKEN_SECRET}}'
   jwt-issuer: api-gateway
+  jwt-audience: orders-api
 ```
+
+A token is accepted when it is signed with HS256 and `jwt-secret` (any other `alg`, `none` included, is
+refused), carries `exp` in the future (unless `jwt-require-exp: false`), has no `nbf` or `iat` in the future,
+matches `jwt-issuer` and `jwt-audience` where they are set, and has a string `sub`. `sub` becomes
+`auth.username`, a string `email` claim `auth.email`, and `roles` (an array of strings, or one string)
+`auth.roles`; a token without `roles` authenticates with no roles (so an endpoint `roles:` list answers 403,
+not 401). REST and MCP (`mcp.auth.type: bearer`) run the same check (`src/bearer_token_verifier.cpp`).
 
 ### 7.4 OIDC Authentication
 
