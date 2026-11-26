@@ -289,6 +289,12 @@ struct EndpointConfig {
     // `auth:` block (ENDPOINT_AUTH_KEY_IGNORED).
     std::vector<std::string> unknown_keys;
 
+    // Top-level keys the endpoint file had more than once after include
+    // expansion. The first occurrence wins, so a later `{{include:x as auth}}`
+    // is silently ignored. Filled by the endpoint parser; SecurityAuditor
+    // reports `auth` (ENDPOINT_DUPLICATE_AUTH_KEY).
+    std::vector<std::string> duplicate_keys;
+
     // MCP-specific metadata (optional)
     struct MCPToolInfo {
         std::string name;

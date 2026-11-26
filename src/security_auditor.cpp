@@ -247,6 +247,24 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
         }
     }
 
+    // `auth` twice in one endpoint file (two blocks, or an
+    // `{{include:... as auth}}` beside a written one): the first occurrence
+    // wins without a word, so the block the operator meant can be the one
+    // ignored - and with it the protection.
+    for (const auto& endpoint : *config.getEndpoints()) {
+        if (std::find(endpoint.duplicate_keys.begin(), endpoint.duplicate_keys.end(), "auth") ==
+            endpoint.duplicate_keys.end()) {
+            continue;
+        }
+        warnings.push_back({
+            "ENDPOINT_DUPLICATE_AUTH_KEY",
+            "Endpoint file has the `auth` key more than once (after include expansion). Only the "
+            "first one is used; the others, including any `{{include:... as auth}}` after it, are "
+            "ignored. Keep exactly one `auth:` block.",
+            endpointLocation(endpoint)
+        });
+    }
+
     // An `authentication:` (or `Auth:`, `auth_config:`) key is read by
     // nothing. Without an `auth:` block the endpoint is open, or inherits the
     // top-level auth, while its file reads as protected.
