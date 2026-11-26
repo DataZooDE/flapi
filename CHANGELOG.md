@@ -20,6 +20,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   column such as `returning_note`, a `'returning'` literal or a comment made a plain
   `UPDATE` report `rows_affected: 1` and return DuckDB's `Count` row as `data`, and
   hid a final `SELECT`.
+- **The `next` link carries only declared parameters, percent-encoded.** It used to
+  repeat every entry of the template context, unencoded: undeclared query parameters
+  and `field-in: header` values (a tenant header, say) went into the URL, and a value
+  with `&`, a space or `#` broke the link or added parameters. It now holds `offset`,
+  `limit` and the endpoint's declared query fields. A read over POST gets `offset` and
+  `limit` only; POST the same body to it. `?offset=`/`?limit=` on such a POST used to be
+  ignored, so following `next` re-ran page one.
 - **`DatabaseManager::getTableColumns` binds its schema and table (#264).** It passed
   them to a call that never binds, so it returned no columns, and the names it would
   have returned were JSON-quoted.
@@ -29,6 +36,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - A POST endpoint with `operation.type: read` now answers `200` and the read envelope
   instead of `201` and `{"rows_affected": ...}`, and its template no longer runs in a
   write transaction. Remove `type: read` to keep the write behaviour.
+- A client that relied on `next` repeating an undeclared query parameter must declare
+  it as a `field-in: query` request field, or send it again itself.
 - A write endpoint with `returns-data: true` whose last statement is a `SELECT` that
   starts with `WITH`, `FROM` or a comment, or is the only statement, now returns that
   `SELECT`'s rows in `data` where it returned `[]`.

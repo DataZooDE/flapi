@@ -747,7 +747,8 @@ transaction. To serve a body-driven query as a read, declare `operation.type: re
 on the `POST`. It then answers `200` with the read envelope
 (`{"data": [...], "next": ..., "total_count": n}`). Validators apply, a configured
 cache serves it, and `limit`/`offset` page it; send them in the body, like the other
-parameters. MCP and `/doc.yaml` already treated such an endpoint as a read.
+parameters. Its `next` is `/notes/find?offset=...&limit=...` without the filters:
+`POST` the same body to it for the next page. MCP and `/doc.yaml` already treated such an endpoint as a read.
 
 `sqls/notes-find.yaml`, the same template as a read:
 

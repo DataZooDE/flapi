@@ -1206,7 +1206,7 @@ REST endpoints expose SQL queries as HTTP APIs.
 | `description` | string | - | The operation's description in `/doc.yaml`. Without it, `mcp-tool.description` is used; without either, the operation has none |
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
-| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `false` returns a bare JSON array |
+| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `next` is the path with `offset`, `limit` and the endpoint's declared query fields (declaration order, percent-encoded); undeclared parameters, header fields and server-injected keys are never in it. `false` returns a bare JSON array |
 | `total-count` | boolean | `true` | `false`: paginated responses carry no `total_count` and no `X-Total-Count`, and flAPI never runs the `COUNT` query for them; `next` is found by reading one row past the page. For endpoints whose clients only page forward. With `true`, the `COUNT` runs only for a full page or an empty page past the end: a shorter page gives the total itself. On a DuckLake-cached endpoint whose query reads only DuckLake tables, the count is reused until the catalog's next snapshot (exact; see [caching.md](spec/components/caching.md#total_count-of-a-cached-endpoint-242)) |
 | `request-fields-validation` | boolean | `false` | Reject (400) a query parameter that is not a declared `field-name`. `limit`, `offset` and `format` are always allowed |
 
@@ -2274,6 +2274,10 @@ a configured cache serves it, and it answers `200` with the pagination envelope
 path and the query string, each declared field only from its `field-in`. `limit` and `offset` page it and
 may be sent in the body. MCP `tools/call` and `/doc.yaml` already treated such an endpoint as a read. Without
 `type: read` these methods are writes (§8.2).
+
+Its `next` link holds the window only, `"/customers/search?offset=100&limit=100"`: the filters are in the
+body, and a URL must not carry them. To get the next page, `POST` the same body to `next`. An `offset` or
+`limit` in the query string applies when the body does not give one; when it does, the body wins.
 
 ```yaml
 url-path: /customers/search

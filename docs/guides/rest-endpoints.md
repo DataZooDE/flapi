@@ -44,7 +44,9 @@ response is an object, not a bare array:
 
 The page size defaults to **100** rows; `?limit=` and `?offset=` choose a page,
 and the same values come back in the `X-Total-Count`, `X-Limit`, `X-Offset` and
-`X-Next` headers. **`limit` and `offset` are reserved for this.** Do not declare
+`X-Next` headers. `next` repeats the endpoint's declared query fields,
+percent-encoded (`?name=a&b` was sent as `name=a%26b`, and comes back so); a
+parameter the endpoint does not declare is not carried over. **`limit` and `offset` are reserved for this.** Do not declare
 them as request fields and do not use `{{ params.limit }}` in a template: a
 template `LIMIT {{ params.limit }}` applies the limit *before* flAPI's offset, so
 `?limit=2&offset=2` returns `"data": []`. Set `with-pagination: false` if you
