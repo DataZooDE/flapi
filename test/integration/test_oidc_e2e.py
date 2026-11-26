@@ -114,9 +114,12 @@ class _EcKey:
 class MockIssuer:
     """An OIDC provider reduced to what a resource server reads from it."""
 
-    def __init__(self):
+    def __init__(self, delay=0.0):
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
+        self.delay = delay          # seconds each answer takes: widens races
+        self.discovery_fetches = 0
+        self.lock = threading.Lock()
         self.keys = [_Key("k1"), _EcKey("ec256"), _EcKey("ec384", "P-384"),
                      _EcKey("ec521", "P-521", with_alg=False), _Key("ps1", alg="PS256"),
                      _Key("rsa-noalg", alg=None)]
@@ -125,7 +128,11 @@ class MockIssuer:
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802 (http.server API)
+                if issuer.delay:
+                    time.sleep(issuer.delay)
                 if self.path == "/.well-known/openid-configuration":
+                    with issuer.lock:
+                        issuer.discovery_fetches += 1
                     body = {
                         "issuer": issuer.url,
                         "jwks_uri": f"{issuer.url}/jwks",
@@ -136,7 +143,8 @@ class MockIssuer:
                         "id_token_signing_alg_values_supported": ["RS256"],
                     }
                 elif self.path == "/jwks":
-                    issuer.jwks_fetches += 1
+                    with issuer.lock:
+                        issuer.jwks_fetches += 1
                     body = {"keys": [k.jwk() for k in issuer.keys]}
                 else:
                     self.send_error(404)
@@ -182,14 +190,18 @@ class MockIssuer:
 
 
 class FlapiServer:
-    def __init__(self, issuer: MockIssuer):
+    def __init__(self, issuer: MockIssuer, cooldown=0, extra_endpoints=None):
         self.tmp = tempfile.mkdtemp(prefix="flapi_oidc_e2e_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.log_path = os.path.join(self.tmp, "server.log")
+        # The module server refetches the JWKS whenever a kid is unknown
+        # (cooldown 0), so the rotated-key and ghost-kid tests do not depend
+        # on their order. None: the default cooldown.
+        cooldown_line = "" if cooldown is None else f"    jwks-refetch-cooldown-seconds: {cooldown}\n"
         oidc = (f"    issuer-url: {issuer.url}\n"
                 f"    client-id: {CLIENT_ID}\n"
-                f"    allowed-audiences: [{AUDIENCE}]\n")
+                f"    allowed-audiences: [{AUDIENCE}]\n" + cooldown_line)
         sqls = os.path.join(self.tmp, "sqls")
         os.makedirs(sqls)
         with open(os.path.join(sqls, "whoami.yaml"), "w") as f:
@@ -204,7 +216,7 @@ class FlapiServer:
                     "'{{{ auth.type }}}' AS auth_type\n")
         # Endpoints with an OIDC block of their own (#281), each with its own
         # client id so that no two share an issuer and client.
-        extra = {
+        extra = extra_endpoints if extra_endpoints is not None else {
             # No allowed-audiences: `aud` must then contain the client id.
             "noaud": (f"issuer-url: {issuer.url}\nclient-id: {NOAUD_CLIENT}\n"
                       "scopes: [openid, profile]\n"),
@@ -534,3 +546,95 @@ class TestOidcAlgorithms:
                                    "exp": now + 600}).encode())
         sig = _b64url(hmac.new(secret, f"{head}.{body}".encode(), hashlib.sha256).digest())
         assert server.get(f"{head}.{body}.{sig}").status_code == 401
+
+
+def _parallel(calls):
+    """Run the zero-argument callables at once; their results in order."""
+    results = [None] * len(calls)
+    barrier = threading.Barrier(len(calls))
+
+    def run(i):
+        barrier.wait()
+        try:
+            results[i] = calls[i]()
+        except Exception as e:  # noqa: BLE001 - reported by the caller
+            results[i] = e
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(calls))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
+    return results
+
+
+def _status(r):
+    return r.status_code if hasattr(r, "status_code") else repr(r)
+
+
+class TestOidcRegistryAndCooldown:
+    """One handler per effective config, shared by REST and MCP; discovery and
+    JWKS fetched once; unknown kids cannot make flAPI hammer the issuer (#281, #284)."""
+
+    def test_concurrent_first_requests_fetch_discovery_and_jwks_once(self):
+        idp = MockIssuer(delay=0.3).start()
+        srv = FlapiServer(idp, cooldown=None, extra_endpoints={}).start()
+        try:
+            rest = [lambda i=i: srv.get(idp.token(sub=f"rest-{i}")) for i in range(20)]
+            mcp = [lambda i=i: srv.mcp("tools/call", {"name": "whoami", "arguments": {}},
+                                       token=idp.token(sub=f"mcp-{i}")) for i in range(20)]
+            results = _parallel(rest + mcp)
+            assert [_status(r) for r in results] == [200] * 40, \
+                f"{[_status(r) for r in results]}\n{srv.log()[-2000:]}"
+            assert idp.discovery_fetches == 1, idp.discovery_fetches
+            assert idp.jwks_fetches == 1, idp.jwks_fetches
+        finally:
+            srv.stop()
+            idp.stop()
+
+    def test_an_unknown_kid_flood_fetches_at_most_once_per_cooldown(self):
+        idp = MockIssuer().start()
+        srv = FlapiServer(idp, cooldown=2, extra_endpoints={}).start()
+        try:
+            assert srv.get(idp.token()).status_code == 200
+            assert idp.jwks_fetches == 1
+
+            def flood(n, tag):
+                ghosts = [_Key(f"ghost-{tag}-{i}") for i in range(3)]
+                calls = [lambda i=i: srv.get(idp.token(key=ghosts[i % 3])) for i in range(n)]
+                return [_status(r) for r in _parallel(calls)]
+
+            # Inside the cooldown of the first fetch: no fetch at all.
+            assert flood(30, "a") == [401] * 30
+            assert idp.jwks_fetches == 1, idp.jwks_fetches
+            # After it: one fetch for the whole flood, then none again.
+            time.sleep(2.3)
+            assert flood(30, "b") == [401] * 30
+            assert idp.jwks_fetches == 2, idp.jwks_fetches
+            assert flood(30, "c") == [401] * 30
+            assert idp.jwks_fetches == 2, idp.jwks_fetches
+            # The known key keeps working throughout.
+            assert srv.get(idp.token()).status_code == 200
+        finally:
+            srv.stop()
+            idp.stop()
+
+    def test_two_endpoints_with_the_same_issuer_and_client_keep_their_own_audiences(self):
+        idp = MockIssuer().start()
+        extra = {
+            "aud-a": f"issuer-url: {idp.url}\nclient-id: {CLIENT_ID}\nallowed-audiences: [api-a]\n",
+            "aud-b": f"issuer-url: {idp.url}\nclient-id: {CLIENT_ID}\nallowed-audiences: [api-b]\n",
+        }
+        srv = FlapiServer(idp, extra_endpoints=extra).start()
+        try:
+            a, b = idp.token(aud="api-a"), idp.token(aud="api-b")
+            assert srv.get(a, path="/aud-a").status_code == 200
+            assert srv.get(b, path="/aud-b").status_code == 200
+            assert srv.get(b, path="/aud-a").status_code == 401
+            assert srv.get(a, path="/aud-b").status_code == 401
+            # The global block (AUDIENCE) is a third configuration.
+            assert srv.get(a).status_code == 401
+            assert srv.get(idp.token()).status_code == 200
+        finally:
+            srv.stop()
+            idp.stop()
