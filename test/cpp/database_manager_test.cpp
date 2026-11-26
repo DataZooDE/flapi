@@ -430,3 +430,158 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite reports DuckDB's cha
     // Summed over the statements of a multi-statement template.
     CHECK(write("DELETE FROM test_count WHERE id = 4; INSERT INTO test_count VALUES (10, 'a'), (11, 'b')").rows_affected == 3);
 }
+
+// #271: with `returns-data: true` the rows of the LAST statement come back when
+// it is a SELECT - also when it is the only statement, and whatever it starts
+// with (WITH, FROM, a comment). It used to need a second statement and a
+// leading `SELECT` keyword, so a single-SELECT POST answered `data: []`.
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite returns the rows of a final SELECT", "[database_manager][write]") {
+    db_manager->executeQuery("CREATE TABLE test_sel (id INTEGER, name VARCHAR)", {}, false);
+    db_manager->executeQuery("INSERT INTO test_sel VALUES (1, 'a'), (2, 'b'), (3, 'c')", {}, false);
+
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "sel_test.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.returns_data = true;
+    endpoint.connection.push_back("default");
+    const auto write = [&](const std::string& sql) {
+        std::ofstream template_file(templates_dir / "sel_test.sql");
+        template_file << sql;
+        template_file.close();
+        std::map<std::string, std::string> params;
+        return db_manager->executeWrite(endpoint, params);
+    };
+    const auto ids = [](const WriteResult& r) {
+        std::vector<std::string> out;
+        if (r.returned_data) {
+            for (std::size_t i = 0; i < r.returned_data->size(); ++i) {
+                out.push_back((*r.returned_data)[i]["id"].dump());
+            }
+        }
+        return out;
+    };
+    const std::vector<std::string> two_three{"2", "3"};
+
+    SECTION("a single SELECT") {
+        auto r = write("SELECT id, name FROM test_sel WHERE id >= 2 ORDER BY id");
+        CHECK(ids(r) == two_three);
+        CHECK(r.rows_affected == 0);
+        CHECK(r.returned_columns == std::vector<std::string>{"id", "name"});
+    }
+    SECTION("a single WITH ... SELECT") {
+        CHECK(ids(write("WITH t AS (SELECT * FROM test_sel WHERE id >= 2) SELECT id FROM t ORDER BY id")) == two_three);
+    }
+    SECTION("a SELECT after a comment") {
+        CHECK(ids(write("-- the search\n/* block */ SELECT id FROM test_sel WHERE id >= 2 ORDER BY id")) == two_three);
+    }
+    SECTION("FROM-first syntax") {
+        CHECK(ids(write("FROM test_sel SELECT id WHERE id >= 2 ORDER BY id")) == two_three);
+    }
+    SECTION("a WITH ... SELECT after a write") {
+        auto r = write("INSERT INTO test_sel VALUES (4, 'd'); "
+                       "WITH t AS (SELECT * FROM test_sel WHERE id >= 3) SELECT id FROM t ORDER BY id");
+        CHECK(ids(r) == std::vector<std::string>{"3", "4"});
+        CHECK(r.rows_affected == 1);
+    }
+    SECTION("a trailing comment after the final SELECT") {
+        auto r = write("UPDATE test_sel SET name = 'x' WHERE id = 1; "
+                       "SELECT id FROM test_sel WHERE id >= 2 ORDER BY id;\n-- done");
+        CHECK(ids(r) == two_three);
+        CHECK(r.rows_affected == 1);
+    }
+    SECTION("without returns-data a SELECT is not data") {
+        endpoint.operation.returns_data = false;
+        auto r = write("SELECT id FROM test_sel");
+        CHECK(r.rows_affected == 0);
+        CHECK_FALSE(r.returned_data.has_value());
+    }
+}
+
+// #277: RETURNING was found by substring, so a column `returning_note`, a
+// 'returning' literal or a comment made a plain DML look like it returned rows:
+// rows_affected became the result's ONE row, and that row (`Count`) became data.
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite knows RETURNING from the result, not the text", "[database_manager][write]") {
+    db_manager->executeQuery("CREATE TABLE test_ret (id INTEGER, returning_note VARCHAR)", {}, false);
+    db_manager->executeQuery("INSERT INTO test_ret SELECT i, 'n' FROM range(3) t(i)", {}, false);
+
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "ret_test.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.returns_data = true;
+    endpoint.connection.push_back("default");
+    const auto write = [&](const std::string& sql) {
+        std::ofstream template_file(templates_dir / "ret_test.sql");
+        template_file << sql;
+        template_file.close();
+        std::map<std::string, std::string> params;
+        return db_manager->executeWrite(endpoint, params);
+    };
+
+    SECTION("a column named returning_*") {
+        auto r = write("UPDATE test_ret SET returning_note = 'x'");
+        CHECK(r.rows_affected == 3);
+        CHECK((!r.returned_data || r.returned_data->size() == 0));
+    }
+    SECTION("a 'returning' string literal") {
+        auto r = write("UPDATE test_ret SET returning_note = 'RETURNING id'");
+        CHECK(r.rows_affected == 3);
+        CHECK((!r.returned_data || r.returned_data->size() == 0));
+    }
+    SECTION("a comment mentioning RETURNING") {
+        auto r = write("-- no RETURNING here\nDELETE FROM test_ret WHERE id = 0");
+        CHECK(r.rows_affected == 1);
+        CHECK((!r.returned_data || r.returned_data->size() == 0));
+    }
+    SECTION("a false RETURNING does not hide the final SELECT") {
+        auto r = write("UPDATE test_ret SET returning_note = 'y'; SELECT count(*) AS n FROM test_ret WHERE returning_note = 'y'");
+        CHECK(r.rows_affected == 3);
+        REQUIRE(r.returned_data.has_value());
+        REQUIRE(r.returned_data->size() == 1);
+        CHECK((*r.returned_data)[0]["n"].dump() == "3");
+    }
+    SECTION("a real RETURNING still returns its rows") {
+        auto r = write("UPDATE test_ret SET returning_note = 'z' WHERE id < 2 RETURNING id");
+        CHECK(r.rows_affected == 2);
+        REQUIRE(r.returned_data.has_value());
+        CHECK(r.returned_data->size() == 2);
+    }
+    SECTION("a real RETURNING with bound values, as a prepared statement") {
+        RequestFieldConfig id_field;
+        id_field.fieldName = "id";
+        id_field.fieldIn = "body";
+        ValidatorConfig int_validator;
+        int_validator.type = "int";
+        id_field.validators.push_back(int_validator);
+        endpoint.request_fields.push_back(id_field);
+        std::ofstream template_file(templates_dir / "ret_test.sql");
+        template_file << "INSERT INTO test_ret (id, returning_note) VALUES ({{ params.id }}, 'b') RETURNING id;";
+        template_file.close();
+        std::map<std::string, std::string> params{{"id", "7"}};
+        auto r = db_manager->executeWrite(endpoint, params);
+        CHECK(r.rows_affected == 1);
+        REQUIRE(r.returned_data.has_value());
+        REQUIRE(r.returned_data->size() == 1);
+        CHECK((*r.returned_data)[0]["id"].dump() == "7");
+    }
+}
+
+// #264: getTableColumns handed its schema/table to executeQuery(string, params),
+// which never binds, so the `?` placeholders failed and it returned nothing; and
+// names came back JSON-quoted.
+TEST_CASE_METHOD(TestFixture, "DatabaseManager getTableColumns binds schema and table", "[database_manager]") {
+    db_manager->executeQuery("CREATE TABLE test_cols (id INTEGER NOT NULL, name VARCHAR)", {}, false);
+    db_manager->executeQuery("CREATE TABLE test_cols_other (x INTEGER)", {}, false);
+
+    auto columns = db_manager->getTableColumns("main", "test_cols");
+    REQUIRE(columns.size() == 2);
+    CHECK(columns[0].name == "id");
+    CHECK(columns[0].type == "INTEGER");
+    CHECK_FALSE(columns[0].nullable);
+    CHECK(columns[1].name == "name");
+    CHECK(columns[1].type == "VARCHAR");
+    CHECK(columns[1].nullable);
+
+    CHECK(db_manager->getTableColumns("main", "does_not_exist").empty());
+    // A quote in the name is data, not SQL.
+    CHECK(db_manager->getTableColumns("main", "test_cols' OR '1'='1").empty());
+}

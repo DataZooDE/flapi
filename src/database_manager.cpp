@@ -2102,15 +2102,16 @@ PageWindow ReadPageWindow(bool with_pagination, const std::map<std::string, std:
     return window;
 }
 
+// Only the page window. It used to append every entry of the template context,
+// unencoded - undeclared parameters, header fields and whatever else reached
+// it, with `&`, ` ` and `#` breaking the link. The request handler adds the
+// endpoint's declared query fields, percent-encoded (createNextUrl).
 std::string NextLink(const PageWindow& window, const std::map<std::string, std::string>& params) {
-    std::stringstream next_ss;
-    next_ss << "?offset=" << (window.offset + window.limit);
-    for (const auto& [key, value] : params) {
-        if (key != "offset") {
-            next_ss << "&" << key << "=" << value;
-        }
+    std::string next = "?offset=" + std::to_string(window.offset + window.limit);
+    if (params.count("limit")) {
+        next += "&limit=" + std::to_string(window.limit);
     }
-    return next_ss.str();
+    return next;
 }
 }  // namespace
 
@@ -2395,14 +2396,6 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         size_t last = str.find_last_not_of(" \t\n\r");
         return str.substr(first, (last - first + 1));
     };
-    auto startsWith = [](const std::string& str, const std::string& prefix) -> bool {
-        if (str.length() < prefix.length()) return false;
-        std::string strLower = str;
-        std::string prefixLower = prefix;
-        std::transform(strLower.begin(), strLower.end(), strLower.begin(), ::tolower);
-        std::transform(prefixLower.begin(), prefixLower.end(), prefixLower.begin(), ::tolower);
-        return strLower.compare(0, prefixLower.length(), prefixLower) == 0;
-    };
 
     std::vector<std::string> statements = splitSqlStatements(processedQuery);
     if (statements.empty()) {
@@ -2435,6 +2428,26 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
             std::to_string(prepared.bindings.size()) + " bindings)");
     }
 
+    // A trailing piece the parser reads as no statement at all (`SELECT ...;
+    // -- done`) is dropped: it stood where the final SELECT is looked for and
+    // hid its rows. A piece that does not parse is kept - executing it reports
+    // what is wrong.
+    while (statements.size() > 1 && bindings_per_stmt.back().empty()) {
+        bool empty = false;
+        try {
+            auto parser = duckdb::Parser::GetBuiltinParser();
+            parser.ParseQuery(statements.back());
+            empty = parser.statements.empty();
+        } catch (const std::exception&) {
+            empty = false;
+        }
+        if (!empty) {
+            break;
+        }
+        statements.pop_back();
+        bindings_per_stmt.pop_back();
+    }
+
     auto runStatement = [&](size_t idx, const std::string& label) {
         if (bindings_per_stmt[idx].empty()) {
             executor.execute(statements[idx], label);
@@ -2447,9 +2460,14 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
     size_t statementsToExecute = statements.size();
     bool lastStatementIsSelect = false;
 
-    if (statements.size() > 1 && endpoint.operation.returns_data) {
-        std::string lastStatement = trim(statements.back());
-        lastStatementIsSelect = startsWith(lastStatement, "SELECT");
+    // #271: the rows of a final SELECT are the data - also when it is the only
+    // statement (a search that takes its input as a body), and whatever it
+    // starts with (WITH, FROM, a comment). DuckDB's parser decides, not the
+    // first keyword; a statement it cannot parse is not treated as a SELECT.
+    if (endpoint.operation.returns_data) {
+        std::size_t parsed = 0;
+        const auto select_at = FindSelectStatement(statements.back(), &parsed);
+        lastStatementIsSelect = select_at.has_value() && parsed == 1;
         if (lastStatementIsSelect) {
             statementsToExecute = statements.size() - 1;
         }
@@ -2458,10 +2476,38 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
     for (size_t i = 0; i < statementsToExecute; ++i) {
         runStatement(i, "write operation statement " + std::to_string(i + 1));
 
-        std::string currentStatement = trim(statements[i]);
-        std::string upperStatement = currentStatement;
-        std::transform(upperStatement.begin(), upperStatement.end(), upperStatement.begin(), ::toupper);
-        bool hasReturningClause = upperStatement.find("RETURNING") != std::string::npos;
+        // What the statement is and what it answered with, as DuckDB bound it
+        // (#277): RETURNING used to be found by substring, so a column
+        // `returning_note`, a 'returning' literal or a comment made a plain
+        // UPDATE report its one `Count` row as data and as rows_affected.
+        // A DML statement answers CHANGED_ROWS (one BIGINT `Count` row), and
+        // QUERY_RESULT (the changed rows themselves) with RETURNING. A prepared
+        // statement's result says EXECUTE, so its own type comes from the parser.
+        const duckdb_statement_type statement_type =
+            executor.has_result ? duckdb_result_statement_type(executor.result) : DUCKDB_STATEMENT_TYPE_INVALID;
+        const duckdb_result_type return_type =
+            executor.has_result ? duckdb_result_return_type(executor.result) : DUCKDB_RESULT_TYPE_INVALID;
+        bool is_dml = statement_type == DUCKDB_STATEMENT_TYPE_INSERT ||
+                      statement_type == DUCKDB_STATEMENT_TYPE_UPDATE ||
+                      statement_type == DUCKDB_STATEMENT_TYPE_DELETE ||
+                      statement_type == DUCKDB_STATEMENT_TYPE_MERGE_INTO;
+        if (statement_type == DUCKDB_STATEMENT_TYPE_EXECUTE && return_type == DUCKDB_RESULT_TYPE_QUERY_RESULT) {
+            try {
+                auto parser = duckdb::Parser::GetBuiltinParser();
+                parser.ParseQuery(statements[i]);
+                if (parser.statements.size() == 1 && parser.statements[0]) {
+                    const auto type = parser.statements[0]->type;
+                    is_dml = type == duckdb::StatementType::INSERT_STATEMENT ||
+                             type == duckdb::StatementType::UPDATE_STATEMENT ||
+                             type == duckdb::StatementType::DELETE_STATEMENT ||
+                             type == duckdb::StatementType::MERGE_INTO_STATEMENT;
+                }
+            } catch (const std::exception&) {
+                // It ran, so DuckDB read it; a text the standalone parser cannot
+                // read (an extension's syntax) is not a RETURNING we can vouch for.
+            }
+        }
+        const bool hasReturningClause = is_dml && return_type == DUCKDB_RESULT_TYPE_QUERY_RESULT;
 
         // rows_affected is what the DML changed, summed over the statements.
         // It used to be the RESULT's row count - and a DML statement without
@@ -2470,8 +2516,8 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         // With RETURNING the result is the changed rows themselves.
         if (hasReturningClause) {
             result.rows_affected += static_cast<int64_t>(executor.rowCount());
-        } else if (executor.columnCount() == 1 && executor.rowCount() == 1 &&
-                   std::string(duckdb_column_name(&executor.result, 0)) == "Count") {
+        } else if (return_type == DUCKDB_RESULT_TYPE_CHANGED_ROWS && executor.columnCount() == 1 &&
+                   executor.rowCount() == 1) {
             result.rows_affected += duckdb_value_int64(&executor.result, 0, 0);
         }
 
@@ -2482,7 +2528,7 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         }
     }
 
-    if (endpoint.operation.returns_data && !hasReturningData && lastStatementIsSelect && statements.size() > 1) {
+    if (endpoint.operation.returns_data && !hasReturningData && lastStatementIsSelect) {
         runStatement(statements.size() - 1, "select returning data");
         if (executor.columnCount() > 0 && executor.rowCount() > 0) {
             result.returned_data = executor.toJson();
@@ -2623,22 +2669,31 @@ std::vector<ColumnInfo> DatabaseManager::getTableColumns(const std::string& sche
                     "WHERE table_schema = ? AND table_name = ? "
                     "ORDER BY ordinal_position";
         
-        // Create parameter map with numbered placeholders
-        std::map<std::string, std::string> params;
-        params["1"] = schema;
-        params["2"] = table;
-        
-        auto result = executeQuery(query, params, false);
-        
+        // Bound as prepared parameters (#264). executeQuery(string, params)
+        // never binds - its params are the pagination context - so the `?`
+        // stayed unbound and this answered nothing.
+        std::vector<PreparedBindingSpec> bindings(2);
+        bindings[0].field_name = "schema";
+        bindings[0].type = SqlParameterType::Varchar;
+        bindings[0].position = 0;
+        bindings[1].field_name = "table";
+        bindings[1].type = SqlParameterType::Varchar;
+        bindings[1].position = 1;
+        const std::map<std::string, std::string> values{{"schema", schema}, {"table", table}};
+
+        auto result = executeQueryWithBindings(query, bindings, values, {}, false, TotalCount::Exact);
+
         if (result.data.t() == crow::json::type::Null || result.data.size() == 0) {
             return columns;
         }
 
         for (std::size_t i = 0; i < result.data.size(); ++i) {
+            // .s(), not .dump(): dump() JSON-quotes the names ("\"id\"").
+            const crow::json::rvalue row = crow::json::load(result.data[i].dump());
             ColumnInfo col;
-            col.name = result.data[i]["column_name"].dump();
-            col.type = result.data[i]["data_type"].dump();
-            col.nullable = result.data[i]["is_nullable"].dump() == "YES";
+            col.name = row["column_name"].s();
+            col.type = row["data_type"].s();
+            col.nullable = std::string(row["is_nullable"].s()) == "YES";
             columns.push_back(std::move(col));
         }
     } catch (const std::exception& e) {

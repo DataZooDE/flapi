@@ -44,7 +44,10 @@ response is an object, not a bare array:
 
 The page size defaults to **100** rows; `?limit=` and `?offset=` choose a page,
 and the same values come back in the `X-Total-Count`, `X-Limit`, `X-Offset` and
-`X-Next` headers. **`limit` and `offset` are reserved for this.** Do not declare
+`X-Next` headers. `next` repeats the query string you sent, with the new
+`offset`/`limit`, percent-encoded (`name=a%26b` comes back as `name=a%26b`). It
+never carries a header or path field, nor a server-side `default:`. A bad
+`limit` or `offset` is a `400` with `{"errors": [{"field": "limit", ...}]}`. **`limit` and `offset` are reserved for this.** Do not declare
 them as request fields and do not use `{{ params.limit }}` in a template: a
 template `LIMIT {{ params.limit }}` applies the limit *before* flAPI's offset, so
 `?limit=2&offset=2` returns `"data": []`. Set `with-pagination: false` if you
@@ -184,7 +187,12 @@ is `{"rows_affected": n}`, with status `201` for `POST` and `200` for the others
 (DuckDB's count, summed over a multi-statement template; with `RETURNING`, the
 number of returned rows), so a `DELETE` of a missing id answers `0`. Rows a
 `RETURNING` sends back come as `"data"` after `rows_affected`, their keys in the
-`RETURNING` column order (`[]` with `returns-data: true` and no row). A `DELETE`
+`RETURNING` column order (`[]` with `returns-data: true` and no row). With
+`returns-data: true`, a template whose last statement is a `SELECT` returns that
+`SELECT`'s rows as `data`, also when it is the only statement. A search that takes a
+JSON body but should answer like a `GET` (`200`, `{"data", "next", "total_count"}`,
+cache, pagination) declares `operation.type: read` instead; see
+[Writing SQL templates](./sql-templates.md). A `DELETE`
 endpoint is written like the others:
 
 ```yaml

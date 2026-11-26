@@ -160,13 +160,15 @@ Every user value is a bound parameter; an absent optional binds NULL, so
 
 ```bash
 curl 'http://localhost:8080/customers?nation=5&limit=2&offset=2'
-# {"next":"/customers?offset=4&limit=2&nation=5&sort=id","total_count":57,"data":[...]}
+# {"next":"/customers?offset=4&limit=2&nation=5","total_count":57,"data":[...]}
 # headers: X-Total-Count, X-Offset, X-Limit, X-Next
 curl 'http://localhost:8080/customers?format=csv'   # or Accept: text/csv; Arrow via application/vnd.apache.arrow.stream
 ```
 
-`limit`/`offset` must be plain non-negative integers (else 400). `next` is
-empty on the last page and for `limit=0` (count only). With
+`limit`/`offset` must be plain non-negative integers (else a JSON 400
+`{"errors":[{"field":"limit",...}]}`). `next` is your own query string with the
+new offset/limit (percent-encoded; no header/path fields, no server defaults); it
+is empty on the last page and for `limit=0` (count only). With
 `with-pagination: false` the body is a bare JSON array and no count query runs.
 The count query runs only when the page cannot tell the total (a full page, or an
 empty page past the end); on a DuckLake-cached endpoint it is reused until the
@@ -260,7 +262,9 @@ FROM read_parquet('{{{ conn.path }}}')
 
 ## Write endpoints (runnable)
 
-POST, PUT, PATCH and DELETE are writes (`operation.type: write` is implied). Defaults:
+POST, PUT, PATCH and DELETE are writes (`operation.type: write` is implied;
+`operation.type: read` makes a POST a read with body parameters: 200, the
+`{data, next, total_count}` envelope, validators, cache). Defaults:
 `transaction: true` (BEGIN/COMMIT, ROLLBACK on error), `validate-before-write:
 true` (missing required fields AND undeclared body keys are 400),
 `returns-data: false` (rows from `RETURNING` are still returned). POST answers
@@ -387,8 +391,9 @@ DELETE FROM notesdb.notes WHERE id = {{ params.id }}
 ```
 
 - A write template may hold several `;`-separated statements; each runs as its
-  own prepared statement. With `returns-data: true` and a final `SELECT`, that
-  SELECT's rows become `data`.
+  own prepared statement. With `returns-data: true` and a final `SELECT` (also
+  the only statement; `WITH`/`FROM`/a leading comment count), that SELECT's rows
+  become `data`.
 - A database error (constraint, missing table) is a 500 with the generic body
   and a `request_id`; the detail is only in the server log under that id.
   SQLite/DuckDB lock contention is a 503 + `Retry-After`.

@@ -37,7 +37,7 @@ a validator `- type: int`.
   `field-name` (other than `limit` / `offset` / `format`) is `Unknown parameter not defined
   in endpoint configuration`.
 - `limit` / `offset` on a paginated GET must be plain non-negative integers;
-  otherwise a plain-text 400 `Invalid pagination parameters: ...`. `limit=0`
+  otherwise a JSON 400 `{"errors":[{"field":"limit","message":"limit must be a non-negative integer"}]}`. `limit=0`
   returns no rows and `next: ""` (only `total_count` / `X-Total-Count`).
 - A query parameter given twice (`?x=1&x=2`) is a 400
   `{"error":"Duplicate query parameter: x"}`; it used to take the first value.

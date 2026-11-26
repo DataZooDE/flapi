@@ -1206,7 +1206,7 @@ REST endpoints expose SQL queries as HTTP APIs.
 | `description` | string | - | The operation's description in `/doc.yaml`. Without it, `mcp-tool.description` is used; without either, the operation has none |
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
-| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `false` returns a bare JSON array |
+| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `next` is the path with the new `offset`/`limit` followed by the client's own query string as sent (percent-encoded), without names the endpoint reads from a header, the body or the path and without server-injected keys; a field's `default:` is never in it. A bad `limit`/`offset` is a `400` `{"errors": [{"field": "limit", "message": "limit must be a non-negative integer"}]}`. A repeated query parameter is a `400`. `false` returns a bare JSON array |
 | `total-count` | boolean | `true` | `false`: paginated responses carry no `total_count` and no `X-Total-Count`, and flAPI never runs the `COUNT` query for them; `next` is found by reading one row past the page. For endpoints whose clients only page forward. With `true`, the `COUNT` runs only for a full page or an empty page past the end: a shorter page gives the total itself. On a DuckLake-cached endpoint whose query reads only DuckLake tables, the count is reused until the catalog's next snapshot (exact; see [caching.md](spec/components/caching.md#total_count-of-a-cached-endpoint-242)) |
 | `request-fields-validation` | boolean | `false` | Reject (400) a query parameter that is not a declared `field-name`. `limit`, `offset` and `format` are always allowed |
 
@@ -2265,7 +2265,42 @@ Read operations (queries) are the default for `GET`, `HEAD`, and `OPTIONS` metho
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `operation.type` | string | `Read` | Operation type (auto-detected) |
+| `operation.type` | string | `Read` | `read` or `write`, any case (auto-detected from the method when absent). Any other value stops startup and `--validate-config` |
+
+**A read over `POST`.** `operation.type: read` on a `POST` (or `PUT`/`PATCH`/`DELETE`) endpoint makes
+it a read that takes its input as a JSON body. Over REST it then runs the read path: validators apply,
+a configured cache serves it, and it answers `200` with the pagination envelope
+(`{"data": [...], "next": ..., "total_count": n}`). Parameters are read as for a write: from the body, the
+path and the query string, each declared field only from its `field-in`. `limit` and `offset` page it and
+may be sent in the body. MCP `tools/call` and `/doc.yaml` already treated such an endpoint as a read. Without
+`type: read` these methods are writes (§8.2).
+
+Its `next` link is the path with the new window and the client's own query string, e.g.
+`"/customers/search?offset=100&limit=100&min_balance=5"`; the body's fields are not in it. To get the next
+page, `POST` the same body to `next`: an `offset`/`limit` in the query string wins over the body's, so the
+same body (even one holding `"offset": 0`) moves forward. A `limit`/`offset` in the body may be a number or
+a numeric string (`"2"`); either must be a plain non-negative integer. Arrow (`?format=arrow`) pages with
+the client's window from the query string or the body.
+
+The body must be a JSON object: anything else (malformed JSON, an array, a bare string) is a `400`
+`request body is not a JSON object`. A body key the endpoint does not declare is a `400`, as on the write
+path, while `operation.validate-before-write` is on (the default; `request-fields-validation: true` also
+turns it on). A repeated query parameter is a `400`, as on a `GET`.
+
+```yaml
+url-path: /customers/search
+method: POST
+operation:
+  type: read
+request:
+  - field-name: name
+    field-in: body
+    required: true
+    validators:
+      - type: string
+        max-length: 100
+template-source: customers-search.sql   # a SELECT, paginated like a GET
+```
 
 ### 8.2 Write Operations
 
@@ -2279,10 +2314,22 @@ endpoint is no different — its template is the `DELETE FROM …` statement, an
 too (cache maintenance after it, write result). With `returns-data: true` the body always has `data`:
 `[]` when the `RETURNING` matched no row.
 
+With `returns-data: true`, the rows of the template's **last statement** become `data` when it is a
+`SELECT`, also when it is the only statement. DuckDB's parser decides what counts as a `SELECT`, so
+`WITH ... SELECT`, `FROM ...` and a `SELECT` behind a comment all count. A `RETURNING` clause is
+recognised from what DuckDB says the statement returned, not from its text, so a column such as
+`returning_note`, a `'returning'` literal or a comment is not mistaken for one. When a `RETURNING`
+returned rows, they are the `data` and a final `SELECT` is not run. A trailing piece that is only a
+comment (`...; SELECT ...;\n-- done`) is ignored.
+
+A write's body must be a JSON object (else `400` `request body is not a JSON object`). `?limit=` and
+`?offset=` never reach a write template; a `limit`/`offset` in the body does, and must then be a plain
+non-negative integer (else the validators' `400`).
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `operation.type` | string | `Write` | Operation type |
-| `operation.returns-data` | boolean | `false` | Whether operation returns results (RETURNING clause) |
+| `operation.type` | string | `Write` | Operation type; `read` makes the endpoint a read (§8.1) |
+| `operation.returns-data` | boolean | `false` | Always answer `data`: the `RETURNING` rows, else the rows of a final `SELECT` |
 | `operation.transaction` | boolean | `true` | Wrap in transaction |
 | `operation.validate-before-write` | boolean | `true` | Apply strict validation |
 
@@ -2315,7 +2362,7 @@ cache:
 
 MCP tool calls that write follow the same rules.
 
-> **Implementation:** `src/request_handler.cpp`, `src/query_executor.cpp` | **Tests:** `test/integration/test_write_operations.tavern.yaml`
+> **Implementation:** `src/request_handler.cpp`, `src/database_manager.cpp` (`executeWrite`) | **Tests:** `test/integration/test_write_operations.tavern.yaml`, `test/integration/test_post_select_and_read.py`
 
 ---
 
