@@ -56,6 +56,11 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **REST audit lines carry a row count (#279).** `row_count` was `-1` on every REST
   line, and the request span had no `db.response.returned_rows`. A read records the
   rows of the page it returned (not `total_count`), a write its `rows_affected`.
+- **`--validate-config` no longer creates the audit file (#279).** The file was opened
+  while the configuration was parsed, so validation (and `flapi pack`) created it, and a
+  missing directory failed as a bare configuration error. The server now opens it at
+  startup; validation reports a missing directory, or a `file` sink without `path`, as an
+  error on `audit.path`.
 
 ### Upgrade notes
 
@@ -76,6 +81,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   write) where they said `-1`, and REST request spans gain `db.response.returned_rows`.
   A dashboard that filtered on `row_count = -1` to find REST traffic must filter on
   `method` instead.
+- `--validate-config` with `audit.sink: file` and no `audit.path` now fails validation
+  (it failed loading before). The server still refuses to start when the audit file
+  cannot be opened, now after the database is up rather than while parsing.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

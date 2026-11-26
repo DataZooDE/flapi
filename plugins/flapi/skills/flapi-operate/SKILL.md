@@ -253,6 +253,9 @@ tracing:
   db_profiling: summary                   # off | summary | detailed: DuckDB timings on the query span
 ```
 
+The audit file (`sink: file`) is opened when the server starts: it is created if missing,
+its directory is not, and a file that cannot be opened stops startup. `--validate-config`
+creates nothing and reports a missing directory as an `audit.path` error.
 Audit lines (`audit:`) carry `row_count`: the rows of the page a REST read returned (not
 `total_count`), `rows_affected` for a REST write, the result rows of an MCP tool call, `-1`
 for a denial or an error. The request span has the same number as `db.response.returned_rows`.

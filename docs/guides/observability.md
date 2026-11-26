@@ -584,7 +584,10 @@ cat audit.jsonl
 - `sink` is `stdout` (the default, mixed into the log stream), `file` or `null`.
   `path` is required for `file`. A relative path is resolved against the
   working directory. The file is created if missing, but its directory is not:
-  if the file cannot be opened, flAPI does not start.
+  if the file cannot be opened, flAPI does not start. The file is opened when
+  the server starts, so `flapi --validate-config` and `flapi pack` do not create
+  it; they report a missing directory (or a `file` sink without a `path`) as an
+  error on `audit.path`.
 - `status`:
   - `success`;
   - `denied` (401 or 403);

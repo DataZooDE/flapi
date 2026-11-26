@@ -859,7 +859,7 @@ Per-request JSONL audit log. Records the principal, method, target (REST path or
 |-----------|------|---------|-------------|
 | `audit.enabled` | boolean | `false` | Off by default — operators opt in |
 | `audit.sink` | string | `stdout` | `stdout` for container log collectors or `file` for a JSONL file |
-| `audit.path` | string | - | Required when `sink: file`. Created if missing |
+| `audit.path` | string | - | Required when `sink: file`. Relative to the working directory. The server creates the file at startup if missing, but not its directory; `--validate-config` checks that the directory exists and creates nothing |
 | `audit.redact` | array | `[]` | Parameter names to replace with `<redacted>` (e.g. `[ssn, jwt]`) |
 
 **Example:**
