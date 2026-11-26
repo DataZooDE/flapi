@@ -22,14 +22,15 @@ becomes a route.
 
 ## Critical gotchas
 
-- **`{{ params.x }}` outside a section is a bound `?` parameter**, but only when
-  the field has a typed validator (`int`, `number`, `boolean`, `date`, `time`,
-  `string`, `enum`, `email`, `uuid`). Never quote it: `'{{ params.name }}'`
-  becomes the literal string `'?'`. Inside `{{#...}}...{{/...}}` it is NOT bound;
-  it is pasted in, HTML-escaped and unquoted.
-- **`{{{ params.x }}}` is raw text interpolation, everywhere.** Use it only for
-  values pinned by an `enum` or a strict `regex` (identifiers, sort columns, or
-  quoted literals inside sections).
+- **`{{ params.x }}` outside a section is a bound `?` parameter at a value
+  site** (after `=`, `<`, `IN (`, in a plain `'...'` literal), but only when the
+  field has a typed validator (`int`, `number`, `boolean`, `date`, `time`,
+  `string`, `enum`, `email`, `uuid`). `c = '{{ params.name }}'` binds as a whole
+  (`c = ?`). Where SQL wants a name or a typed literal it stays text:
+  `ORDER BY {{ params.sort }}` (an `enum`), `DATE '{{ params.d }}'`, `FROM ...`.
+  Inside `{{#...}}...{{/...}}` it is NOT bound; it is pasted in, HTML-escaped.
+- **`{{{ params.x }}}` binds at the same value sites; elsewhere it is raw text.**
+  Use raw sites only for values pinned by an `enum` or a strict `regex`.
 - **Do not write `LIMIT`/`OFFSET` in a template.** `with-pagination` defaults to
   `true`, flAPI always wraps your query in `LIMIT <limit> OFFSET <offset>`
   (default `limit=100`), and an inner LIMIT corrupts `total_count` and makes

@@ -151,10 +151,10 @@ Add `?validate_only=1` to also parse and plan the SQL without running it (see th
 
 The rule of thumb:
 
-- **Values** (after `=`, `<`, `IN (`, `LIKE`): write `{{ params.x }}` bare, or
-  `'{{{ params.x }}}'` in quotes. Outside sections, flAPI binds both.
-- **Names and keywords** (`ORDER BY`, a table, `DATE '...'`): write
-  `{{{ params.x }}}` and restrict it with an `enum` or a strict `regex` validator.
+- **Values** (after `=`, `<`, `IN (`, `LIKE`): write `{{ params.x }}` bare or
+  `'{{ params.x }}'` in quotes. Outside sections, flAPI binds both.
+- **Names and keywords** (`ORDER BY`, a table, `DATE '...'`): these stay text.
+  Restrict the field with an `enum` or a strict `regex` validator.
 - **`conn.*`, `env.*`, `auth.*`**: write `'{{{ ... }}}'`. These are never bound.
   `auth.*` must be in a plain `'...'` literal of the outer query (step 6).
 
@@ -184,10 +184,12 @@ At a value site outside sections, a typed field is bound like this:
 | You write | DuckDB receives |
 |---|---|
 | `c = {{ params.x }}` | `c = ?` |
-| `c = {{{ params.x }}}` | `c = ?` |
-| `c = '{{{ params.x }}}'` | `c = ?` (the quotes go, the value is bound as text) |
-| `c LIKE '%{{{ params.x }}}%'` | `c LIKE ('%' \|\| ? \|\| '%')` |
-| `c IN ('{{{ params.a }}}', '{{{ params.b }}}')` | `c IN (?, ?)` |
+| `c = '{{ params.x }}'` | `c = ?` (the quotes go, the value is bound as text) |
+| `c LIKE '%{{ params.x }}%'` | `c LIKE ('%' \|\| ? \|\| '%')` |
+| `c IN ('{{ params.a }}', '{{ params.b }}')` | `c IN (?, ?)` |
+| `status = {{ params.k }}` (an `enum`) | `status = ?` |
+
+Triple braces bind at the same sites: `c = '{{{ params.x }}}'` is also `c = ?`.
 
 An absent value binds `NULL` at an unquoted site and `''` inside quotes.
 
@@ -195,19 +197,18 @@ These sites stay **text**, and the validator is your only defence there:
 
 | Site | Example |
 |---|---|
-| Inside a section | `{{#params.x}} AND c = {{{ params.x }}} {{/params.x}}` |
-| A typed literal or a keyword that takes a string (`{{{ }}}` only) | `DATE '{{{ params.d }}}'`, `INTERVAL '{{{ params.n }}} days'`, `ATTACH '{{{ params.f }}}'` |
-| Where a name is expected (`{{{ }}}` only) | `FROM {{{ params.t }}}`, `JOIN`, `INTO`, `AS`, `BY`, ... |
-| Glued to an identifier (`{{{ }}}` only) | `sales_{{{ params.year }}}` |
-| An `enum` field without quotes (`{{{ }}}` only) | `ORDER BY {{{ params.sort }}}` |
-| A DuckLake time-travel clause (`{{{ }}}` only) | `AT (VERSION => {{{ params.v }}})` |
+| Inside a section | `{{#params.x}} AND c = '{{ params.x }}' {{/params.x}}` |
+| A typed literal or a keyword that takes a string | `DATE '{{ params.d }}'`, `INTERVAL '{{ params.n }} days'`, `ATTACH '{{ params.f }}'` |
+| Where a name is expected | `FROM {{ params.t }}`, `JOIN`, `INTO`, `AS`, `BY`, ... |
+| Glued to an identifier | `sales_{{ params.year }}` |
+| An `enum` field without quotes, except right after a comparison or `(` | `ORDER BY {{ params.sort }}`, `ORDER BY a, {{ params.sort }}` |
+| A DuckLake time-travel clause, quoted or with `{{{ }}}` | `AT (TIMESTAMP => CAST('{{ params.ts }}' AS TIMESTAMP))` |
 | A SQL comment | `-- {{ params.x }}` |
 | Every variable that is not `params.*` | `{{{ conn.path }}}`, `{{{ auth.username }}}`, `{{{ env.X }}}` |
 
-The "`{{{ }}}` only" rows matter: the rewriter checks the surrounding SQL only
-for triple braces. A double-brace reference to a typed field outside a section
-is turned into `?` wherever it is, so at most of those sites it breaks the
-statement (see [Common mistakes](#common-mistakes)).
+Both brace forms follow these rules. An unquoted `{{ params.v }}` in
+`AT (VERSION => {{ params.v }})` stays bound, which DuckLake accepts for an
+`int` or `date` field.
 
 Binding is also the fast path. A bound template renders to the same SQL text
 for every value, and each request thread keeps up to 64 prepared `SELECT`s keyed
@@ -745,15 +746,9 @@ curl -s -X POST http://localhost:8080/notes/search -H 'Content-Type: application
 
 ## Common mistakes
 
-- **`'{{ params.x }}'` with double braces inside quotes.** Outside a section it
-  becomes the string `'?'`, not a placeholder, and the request fails with `500`
-  (the log says `Failed to bind parameter`). The same happens in
-  `DATE '{{ params.d }}'`. Write `{{ params.x }}` without quotes, or
-  `'{{{ params.x }}}'`.
-- **`ORDER BY {{ params.sort }}`.** Double braces become `?`, and DuckDB answers
-  `Parameter not supported in ORDER BY clause` (a `500`). Use
-  `{{{ params.sort }}}` with an `enum` validator. The same goes for table and
-  column names.
+- **A name from a free-text field.** `ORDER BY {{ params.sort }}` or
+  `FROM {{ params.t }}` is text, not a parameter: a column or table name cannot
+  be bound. Give the field an `enum` validator (or a strict `regex`).
 - **`{{ conn.path }}`, or `{{ }}` on a string inside a section.** HTML escaping
   turns `/srv/data/x.parquet` into `&#x2F;srv&#x2F;data&#x2F;x.parquet` (a
   `./data/...` path too, since it is made absolute first) and `O'Brien` into

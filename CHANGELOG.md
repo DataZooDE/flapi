@@ -2,6 +2,22 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Fixed
+
+- **`{{ params.x }}` binds only where SQL takes a value (#277).** It now has the site checks
+  `{{{ }}}` always had: an `enum` in `ORDER BY`, `DATE '{{ params.d }}'`, a name after `FROM`
+  or `AS`, a comment or an identifier it is glued to stay text instead of a `?` that DuckDB
+  refuses (`Parameter not supported in ORDER BY clause`, `Failed to bind parameter`, a `500`).
+  A quoted `c = '{{ params.name }}'` binds as a whole literal (`c = ?`), so `O'Brien` matches.
+
+### Upgrade notes
+
+- **An unquoted `enum` in `{{ }}` is text unless it follows a comparison or `(`.**
+  `ORDER BY {{ params.sort }}` now works; `status = {{ params.k }}` and
+  `IN ({{ params.k }})` are still bound.
+
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 
 ### Security

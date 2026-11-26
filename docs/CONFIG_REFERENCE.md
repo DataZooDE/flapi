@@ -1769,29 +1769,35 @@ parameter, so the value can never change the SQL — but only when all of these 
 - the field is declared under `request:` and has a validator whose `type` is one of `int`/`integer`,
   `number`/`float`/`double`, `boolean`/`bool`, `date`, `time`, `string`, `uuid`, `email` or `enum`. A
   field without such a validator is rendered as text;
-- the reference is **not** inside a SQL string literal. flAPI replaces the tag with `?` wherever it
-  stands, so `'{{ params.x }}'` becomes the literal `'?'`, not a placeholder, and the request fails with
-  `500` (the server log, under the response's `request_id`, says `Failed to bind parameter`). Write `WHERE name = {{ params.name }}`, without quotes; the bound value
-  is typed (`VARCHAR` for string-like validators), so no quotes are needed.
+- the reference is at a **value site**: where SQL takes a value, such as the right side of `=`, an
+  `IN (...)` list or a plain `'...'` literal.
+
+Both brace forms bind at the same sites (#192 for `{{{ }}}`, #277 for `{{ }}`): `n = {{ params.x }}`,
+`n = '{{ params.x }}'` and their triple-brace forms all become `n = ?` (a quoted site binds the text, and
+an absent value binds `''` as it used to render), and `n LIKE '%{{ params.x }}%'` becomes
+`n LIKE ('%' || ? || '%')`. A quoted literal with several tags or surrounding text is concatenated, so
+`'{{ a }}-{{{ b }}}'` becomes `(? || '-' || ?)`.
+
+A tag stays text (validated by the field's validator and the screen above) inside a section, inside a
+SQL comment, when it follows a keyword that expects a name or makes a typed literal (`FROM`, `JOIN`,
+`INTO`, `TABLE`, `BY`, `AS`, `DATE '...'`, `INTERVAL '...'`, `ATTACH '...'`, `E'...'`), when it is glued
+to an identifier (`t_{{ params.x }}`), and for an `enum` field without quotes, which is a whitelisted
+name (`ORDER BY {{ params.sort }}`, `ORDER BY a, {{ params.sort }}`). A double-brace `enum` right after
+a comparison or `(` is still a value and binds (`status = {{ params.k }}`, `IN ({{ params.k }})`).
+In `AT (VERSION|TIMESTAMP => ...)` a triple brace or a quoted literal stays text (DuckLake cannot take a
+bound string there); an unquoted `{{ params.x }}` there stays bound, which works for `int` and `date`
+fields.
 
 ```sql
--- bound: outside a section, typed field, no quotes
+-- bound: outside a section, typed field, at a value site
 WHERE name = {{ params.name }}
--- NOT bound: inside a section; quote it with triple braces and rely on the validator
-{{#params.city}} AND city = '{{{ params.city }}}' {{/params.city}}
+WHERE name = '{{ params.name }}'
+-- text: an enum used as a name, and a typed literal
+ORDER BY {{ params.sort }}
+WHERE born = DATE '{{ params.d }}'
+-- NOT bound: inside a section; the validator is the defence
+{{#params.city}} AND city = '{{ params.city }}' {{/params.city}}
 ```
-
-`{{{ params.x }}}` is bound the same way (#192) when it is a plain value site of a typed field outside
-every section: `n = {{{ params.x }}}` and `n = '{{{ params.x }}}'` both become `n = ?` (a quoted
-site binds the text, and an absent value binds `''` as it used to render), and
-`n LIKE '%{{{ params.x }}}%'` becomes `n LIKE ('%' || ? || '%')`. It stays raw text
-(validated by the field's validator and the screen above) inside a section, inside a SQL comment, inside
-`AT (VERSION|TIMESTAMP => ...)` (DuckLake resolves it before parameters are bound), when the field is an
-`enum` and the tag is unquoted (a whitelisted identifier such as `ORDER BY {{{ params.sort }}}`), when it
-follows a keyword that expects a name or makes a typed literal (`FROM`, `JOIN`, `INTO`, `TABLE`, `BY`,
-`DATE '...'`, `INTERVAL '...'`, `ATTACH '...'`, `E'...'`), when it is glued to an identifier
-(`t_{{{ params.x }}}`), or when a quoted literal mixes it with a non-triple-brace tag. A tag in a
-quoted literal with surrounding text is concatenated, so `'{{{a}}}-{{{b}}}'` becomes `(? || '-' || ?)`.
 Reserve raw `{{{ }}}` text for identifiers and fragments you validate with an `enum` or a strict
 `regex`, and for optional filters inside sections. Set
 `preventSqlInjection: false` on a field only when every reference to it is a bound `{{ }}` and it
@@ -2332,9 +2338,9 @@ SELECT * FROM table
 WHERE id = {{ params.id }}        -- with `validators: [{type: int}]` → bound as int64
 ```
 
-The placeholder is only used **outside** `{{#...}}`/`{{^...}}` sections and **outside** SQL string
-literals: inside a section the value is rendered as text, and `'{{ params.x }}'` turns into the literal
-`'?'` (the request then fails with `500`; the server log says `Failed to bind parameter`). See
+The placeholder is only used **outside** `{{#...}}`/`{{^...}}` sections and at value sites:
+`'{{ params.x }}'` binds as a whole literal, while `ORDER BY {{ params.sort }}` (an `enum`),
+`DATE '{{ params.d }}'` and `FROM {{ params.t }}` stay text. See
 [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence).
 
 **Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping. For a typed field at a plain value site outside every section (`= {{{ params.x }}}`, `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'`) the rewriter binds the value just like `{{ }}` does (see [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence)); everywhere else (inside sections, identifiers, typed literals such as `DATE '...'`, `AT (VERSION|TIMESTAMP => ...)`) it is raw text:
@@ -2451,7 +2457,7 @@ WHERE name LIKE '%{{{ params.name }}}%'
 WHERE name = '{{{ params.name }}}'
 ```
 
-Use triple braces (`{{{ params.X }}}`) inside sections and when the value is part of the SQL text — an identifier (validate it with `enum`), a typed literal (`DATE '{{{ params.d }}}'`), or an `AT (VERSION|TIMESTAMP => ...)` argument; those sites are rendered raw. A bare double-brace `{{ params.x }}` inside `AT (...)` stays bound: that works for `int` and `date` fields, but DuckLake cannot take a bound string there, so write `AT (TIMESTAMP => CAST('{{{ params.ts }}}' AS TIMESTAMP))` with a strict `pattern:` validator on `ts`.
+Where the value is part of the SQL text, either form is rendered as text — an identifier (validate it with `enum`), a typed literal (`DATE '{{ params.d }}'`), or a quoted `AT (VERSION|TIMESTAMP => ...)` argument. A bare double-brace `{{ params.x }}` inside `AT (...)` stays bound: that works for `int` and `date` fields, but DuckLake cannot take a bound string there, so write `AT (TIMESTAMP => CAST('{{{ params.ts }}}' AS TIMESTAMP))` with a strict `pattern:` validator on `ts`.
 
 **3. Provide Default Values:**
 
