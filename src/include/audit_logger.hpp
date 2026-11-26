@@ -6,6 +6,7 @@
 #include <ostream>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace flapi {
 
@@ -41,8 +42,21 @@ struct AuditEvent {
 // for any reason; redaction happens inside.
 class AuditLogger {
 public:
+    // Opens nothing: a configuration check (--validate-config, `flapi pack`)
+    // builds the logger too, and must not create the audit file.
     explicit AuditLogger(AuditConfig config);
     ~AuditLogger();
+
+    // Opens the file sink (append, created if missing). Called once by the
+    // server at startup, so a file that cannot be opened stops startup instead
+    // of failing the first request. Idempotent; a no-op for stdout/null or a
+    // disabled logger. Throws std::runtime_error when the file cannot be opened.
+    void open();
+
+    // What would make open() fail, without touching the file system beyond
+    // checking that the file's directory exists: a file sink without a path, or
+    // a path whose directory is missing. Empty when enabled is false.
+    static std::vector<std::string> ValidateConfig(const AuditConfig& config);
 
     AuditLogger(const AuditLogger&) = delete;
     AuditLogger& operator=(const AuditLogger&) = delete;
@@ -64,6 +78,9 @@ private:
     static std::string nowIso8601();
     static std::string generateRequestId();
     std::string serialiseEvent(const AuditEvent& event) const;
+    void openLocked();   // write_mutex_ held
+
+    bool opened_ = false;
 };
 
 // Build an audit event from the request context, so the audit line, the log

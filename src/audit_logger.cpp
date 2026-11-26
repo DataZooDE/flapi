@@ -7,6 +7,7 @@
 #include <chrono>
 #include <crow/json.h>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -37,18 +38,57 @@ AuditLogger::AuditLogger(AuditConfig config) : config_(std::move(config)) {
     }
     if (config_.sink == "stdout") {
         sink_stream_ = &std::cout;
+        opened_ = true;
     } else if (config_.sink == "file") {
-        auto file = std::make_unique<std::ofstream>(config_.path, std::ios::app);
-        if (!file->is_open()) {
-            throw std::runtime_error("audit log: cannot open " + config_.path);
-        }
-        file_stream_ = std::move(file);
-        sink_stream_ = file_stream_.get();
+        // Opened by open(), at serve time: the configuration is also parsed by
+        // --validate-config, which must not create the file.
     } else if (config_.sink == "null") {
         sink_stream_ = nullptr;
+        opened_ = true;
     } else {
         throw std::runtime_error("audit log: unknown sink '" + config_.sink + "'");
     }
+}
+
+void AuditLogger::open() {
+    if (!config_.enabled) {
+        return;
+    }
+    std::lock_guard<std::mutex> guard(write_mutex_);
+    openLocked();
+}
+
+void AuditLogger::openLocked() {
+    if (opened_) {
+        return;
+    }
+    auto file = std::make_unique<std::ofstream>(config_.path, std::ios::app);
+    if (!file->is_open()) {
+        throw std::runtime_error("audit log: cannot open " + config_.path);
+    }
+    file_stream_ = std::move(file);
+    sink_stream_ = file_stream_.get();
+    opened_ = true;
+}
+
+std::vector<std::string> AuditLogger::ValidateConfig(const AuditConfig& config) {
+    std::vector<std::string> errors;
+    if (!config.enabled || config.sink != "file") {
+        return errors;
+    }
+    if (config.path.empty()) {
+        errors.push_back("audit.path is required when audit.sink is file");
+        return errors;
+    }
+    // Relative to the working directory, as the server opens it.
+    const std::filesystem::path path(config.path);
+    const std::filesystem::path dir = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec)) {
+        errors.push_back("audit.path: the directory " + dir.string() + " of " + config.path +
+                         " does not exist; flAPI creates the file, not its directory");
+    }
+    return errors;
 }
 
 AuditLogger::~AuditLogger() = default;
@@ -66,11 +106,21 @@ void AuditLogger::log(AuditEvent event) {
 
     const std::string line = serialiseEvent(event);
 
+    std::lock_guard<std::mutex> guard(write_mutex_);
+    if (!opened_) {
+        // The server opens the file at startup; this covers a logger used
+        // without that (tests, tools). A failure drops the line: an audit sink
+        // must not fail the request it describes.
+        try {
+            openLocked();
+        } catch (const std::exception& e) {
+            std::cerr << e.what() << std::endl;
+            return;
+        }
+    }
     if (sink_stream_ == nullptr) {
         return;  // null sink — no I/O
     }
-
-    std::lock_guard<std::mutex> guard(write_mutex_);
     (*sink_stream_) << line << '\n';
     sink_stream_->flush();
 }

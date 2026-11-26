@@ -37,6 +37,14 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm,
                      const std::string& config_service_token)
     : configManager(cm), dbManager(db_manager), openAPIDocGenerator(std::make_shared<OpenAPIDocGenerator>(cm, db_manager)), requestHandler(dbManager, cm), startedAt(std::chrono::steady_clock::now())
 {
+    // The audit file is opened here, when serving, not while the configuration
+    // is parsed: --validate-config parses it too and must not create the file.
+    // Throws when it cannot be opened, so the server does not start without it.
+    if (configManager) {
+        if (const auto audit = configManager->getAuditLogger()) {
+            audit->open();
+        }
+    }
     // Initialize MCP session manager
     mcpSessionManager = std::make_shared<MCPSessionManager>();
 

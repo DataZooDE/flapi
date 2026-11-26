@@ -274,6 +274,18 @@ int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const s
         }
     }
 
+    // The audit sink is opened only when serving; check here what would stop that,
+    // without creating the file (#279).
+    const auto audit_errors = flapi::AuditLogger::ValidateConfig(config_manager->getAuditConfig());
+    if (!audit_errors.empty()) {
+        all_valid = false;
+        std::cerr << "\n✗ audit" << std::endl;
+        for (const auto& error : audit_errors) {
+            std::cerr << "  ERROR: " << error << std::endl;
+            errors_count++;
+        }
+    }
+
     flapi::VFSReadMemoScope read_memo;  // validation re-reads every template: fetch each remote file once
     for (const auto& endpoint : *config_manager->getEndpoints()) {
         auto result = config_manager->validateEndpointConfig(endpoint);
@@ -1428,13 +1440,20 @@ int main(int argc, char* argv[])
 
     startup_read_memo.reset();
 
-    // Create unified API server with MCP support (always enabled in unified configuration)
-    setApiServer(std::make_shared<APIServer>(
-        config_manager,
-        DatabaseManager::getInstance(),
-        config_service_enabled,
-        config_service_token
-    ));
+    // Create unified API server with MCP support (always enabled in unified configuration).
+    // It opens the audit file; one that cannot be opened stops startup cleanly.
+    try {
+        setApiServer(std::make_shared<APIServer>(
+            config_manager,
+            DatabaseManager::getInstance(),
+            config_service_enabled,
+            config_service_token
+        ));
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Startup failed: " << flapi::RedactUrlsInText(e.what());
+        DatabaseManager::getInstance()->shutdown();
+        return 1;
+    }
 
     // A SIGTERM during config load or DB init - which can take seconds - has
     // already been acted on by the supervisor, against a server that did not
