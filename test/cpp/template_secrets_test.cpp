@@ -140,6 +140,37 @@ TEST_CASE("publicErrorMessage scrubs, and withholds when it must", "[secrets]") 
     REQUIRE(withheld.find("Binder Error") == std::string::npos);
 }
 
+TEST_CASE("errorLogMessage quotes the detail as error=\"...\" (#259)", "[secrets][log]") {
+    // The detail is DuckDB's text, URL and request values included; quoted, a
+    // space-separated `request_id=FAKE` in it is part of one value.
+    TemplateSecrets none;
+    const auto line = errorLogMessage(
+        "Error handling request",
+        "HTTP GET error on 'http://h/x request_id=FAKE' \"q\" back\\slash", none);
+    REQUIRE(line == "Error handling request error=\"HTTP GET error on 'http://h/x request_id=FAKE' "
+                    "\\\"q\\\" back\\\\slash\"");
+
+    TemplateSecrets scrubbable;
+    scrubbable.add("password", "hunter2-and-then-some", Source::ConfiguredDefault);
+    const auto scrubbed = errorLogMessage("Error handling request",
+                                          "Binder Error: 'hunter2-and-then-some'", scrubbable);
+    REQUIRE(scrubbed.find("hunter2") == std::string::npos);
+    REQUIRE(scrubbed.rfind("Error handling request error=\"Binder Error: ", 0) == 0);
+
+    TemplateSecrets unscrubbable;
+    unscrubbable.add("password", "abc", Source::ConfiguredDefault);
+    const auto withheld = errorLogMessage("Error handling request", "Binder Error: 'abc'", unscrubbable);
+    REQUIRE(withheld.find("'abc'") == std::string::npos);
+    REQUIRE(withheld.rfind("Error handling request error=\"", 0) == 0);
+    REQUIRE(withheld.back() == '"');
+}
+
+TEST_CASE("quoteLogValue escapes quote and backslash only", "[log]") {
+    REQUIRE(quoteLogValue("plain") == "\"plain\"");
+    REQUIRE(quoteLogValue("a \"b\" \\c") == "\"a \\\"b\\\" \\\\c\"");
+    REQUIRE(quoteLogValue("") == "\"\"");
+}
+
 TEST_CASE("a long neutrally-named connection property is scrubbed", "[secrets]") {
     // Connection properties got only the credential-NAME heuristic while
     // whitelisted env values got the stronger one, so a property called

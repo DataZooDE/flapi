@@ -91,6 +91,11 @@ PARAM_ENDPOINTS = {
     "inject": ("request:\n  - field-name: name\n    field-in: query\n    required: true\n"
                "    validators:\n      - type: string\n        max-length: 300\n",
                "SELECT * FROM read_csv('{fake}/mybucket/data/{{{{{{ params.name }}}}}}')"),
+    # The same into a URL nothing answers: the request fails, and flAPI's error
+    # line quotes DuckDB's error text, URL and parameter included (#259).
+    "deadparam": ("request:\n  - field-name: name\n    field-in: query\n    required: true\n"
+                  "    validators:\n      - type: string\n        max-length: 300\n",
+                  "SELECT * FROM read_csv('http://127.0.0.1:{dead}/{{{{{{ params.name }}}}}}')"),
 }
 PASSWORD = "PWSECRET99"
 
@@ -147,7 +152,7 @@ def _fill_bucket(root, endpoint):
         put(root, f"mybucket/sqls/{name}.yaml",
             f"url-path: /{name}\nmethod: GET\nwith-pagination: false\n{request}"
             f"template-source: {name}.sql\nconnection: [inmem]\n")
-        put(root, f"mybucket/sqls/{name}.sql", sql.format(fake=endpoint))
+        put(root, f"mybucket/sqls/{name}.sql", sql.format(fake=endpoint, dead=_DEAD_PORT))
 
 
 _DEAD_PORT = free_port()  # bound and released: nothing listens there
@@ -593,12 +598,43 @@ def test_a_url_cannot_forge_log_lines_or_fields(bucket, workdir, log_format):
         assert mine, "no duckdb http line for the injection request:\n" + text[-3000:]
         for line in text.splitlines():
             assert not line.startswith("FORGEDLINE"), f"a URL forged a log line: {line!r}"
-            if "duckdb http" not in line or "Error handling request" in line:
-                # flAPI's error line quotes DuckDB's error text, URL included: a
-                # space there is not this feature's to encode (see the report).
-                continue
-            assert not re.search(r"(?:^|\s)request_id=FAKE", line), f"a URL forged a request_id field: {line!r}"
+            # Every text line, flAPI's own error line included: it quotes
+            # DuckDB's error text, URL and all (#259). A JSON record's fields
+            # are keys, so its message may hold the text verbatim.
+            if log_format == "text":
+                assert not re.search(r"(?:^|\s)request_id=FAKE", line), f"a URL forged a request_id field: {line!r}"
             if log_format == "json" and "duckdb http" in line:
                 assert json.loads(line)["request_id"] == rid or json.loads(line)["request_id"] == "-", line
+    finally:
+        stop(proc)
+
+
+@pytest.mark.parametrize("log_http_requests", [None, True], ids=["http-log-off", "http-log-on"])
+def test_an_error_line_cannot_forge_log_fields(bucket, workdir, log_http_requests):
+    # #259: `[error] Error handling request: ... error on '<url>'` quoted DuckDB's
+    # text verbatim. A string parameter in that URL carrying ` request_id=FAKE`
+    # gave a space-splitting log parser a second request_id field, ahead of the
+    # real one. Also with the HTTP request log off.
+    proc, port, read_log = _serve(bucket, workdir, log_http_requests=log_http_requests)
+    try:
+        forged = "x.csv request_id=FAKE trace_id=FAKE span_id=FAKE"
+        r, rid, _ = _get(port, "/deadparam", {"name": forged}, timeout=120)
+        assert r.status_code == 500, r.text
+        deadline = time.time() + 5
+        while True:
+            errors = [l for l in read_log().splitlines()
+                      if "Error handling request" in l and rid in l]
+            if errors or time.time() > deadline:
+                break
+            time.sleep(0.1)
+        assert len(errors) == 1, "expected one error line for the request:\n" + read_log()[-3000:]
+        line = errors[0]
+        assert "FAKE" in line, f"scenario broken: the parameter is not in the error line: {line!r}"
+        assert RID_RE.findall(line) == [rid], f"request_id fields: {RID_RE.findall(line)} in {line!r}"
+        for key in ("trace_id", "span_id"):
+            assert not re.search(rf"(?:^|\s){key}=FAKE", line), f"a URL forged {key}: {line!r}"
+        assert 'Error handling request error="' in line, f"the detail is not quoted: {line!r}"
+        for raw in read_log().splitlines():
+            assert not re.search(r"(?:^|\s)request_id=FAKE", raw), f"a forged request_id field: {raw!r}"
     finally:
         stop(proc)

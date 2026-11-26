@@ -196,3 +196,51 @@ TEST_CASE("text format escapes CR and LF, so a message cannot forge a line", "[l
     REQUIRE(line.find('\r') == std::string::npos);
     REQUIRE(line.find("a\\r\\n(2026") != std::string::npos);
 }
+
+TEST_CASE("text format defuses request_id=, trace_id= and span_id= inside a message (#259)",
+          "[log_handler][security]") {
+    // A DuckDB error quotes the URL it failed on, and a request parameter can
+    // put ` request_id=FAKE` into that URL. A parser that splits on spaces then
+    // read the forged field before the real one the handler appends.
+    FlapiLogHandler handler(FlapiLogHandler::Format::Text);
+    RequestContext rc;
+    RequestContext::mintRequestId(rc.request_id);
+    rc.setTraceId("4bf92f3577b34da6a3ce929d0e0e4736");
+    rc.setSpanId("00f067aa0ba902b7");
+    RequestContextScope scope(&rc);
+    const std::string id(rc.requestIdView());
+
+    const auto line = handler.formatForTest(
+        "Error handling request error=\"HTTP GET error on 'http://h/x request_id=FAKE trace_id=FAKE "
+        "span_id=FAKE'\"",
+        crow::LogLevel::Error);
+    INFO(line);
+    REQUIRE(countOf(line, " request_id=") == 1);
+    REQUIRE(countOf(line, " trace_id=") == 1);
+    REQUIRE(countOf(line, " span_id=") == 1);
+    REQUIRE(line.find(" request_id=" + id) != std::string::npos);
+    REQUIRE(line.find("request_id%3DFAKE") != std::string::npos);
+    REQUIRE(line.find("trace_id%3DFAKE") != std::string::npos);
+    REQUIRE(line.find("span_id%3DFAKE") != std::string::npos);
+
+    SECTION("at the start of the message, and after a tab") {
+        const auto l2 = handler.formatForTest("request_id=A\ttrace_id=B", crow::LogLevel::Info);
+        INFO(l2);
+        REQUIRE(l2.find("] request_id%3DA\ttrace_id%3DB ") != std::string::npos);
+        REQUIRE(countOf(l2, "request_id=") == 1);
+    }
+    SECTION("inside a word it is not a field and stays as is") {
+        const auto l3 = handler.formatForTest("xrequest_id=1 my_span_id=2", crow::LogLevel::Info);
+        INFO(l3);
+        REQUIRE(l3.find("xrequest_id=1 my_span_id=2") != std::string::npos);
+    }
+}
+
+TEST_CASE("JSON format keeps the message verbatim (#259)", "[log_handler][security]") {
+    // The record's own fields are JSON keys; nothing in the message can pose as one.
+    FlapiLogHandler handler(FlapiLogHandler::Format::Json);
+    const auto line = handler.formatForTest("x request_id=FAKE", crow::LogLevel::Info);
+    const auto parsed = crow::json::load(line);
+    REQUIRE(parsed);
+    REQUIRE(std::string(parsed["message"].s()) == "x request_id=FAKE");
+}
